@@ -212,12 +212,22 @@ MODEL_PROVIDER_MAP = {
 
 class ChatModelFactory:
     @staticmethod
+    @staticmethod
     def get_model(model_name: str):
+        # 1. Check Pre-defined Models
         provider_info = MODEL_PROVIDER_MAP.get(model_name)
-        if not provider_info:
-            raise ValueError(f"Unsupported model specified: {model_name}. Available: {list(MODEL_PROVIDER_MAP.keys())}")
-        model_class, provider_model = provider_info
-        return model_class(provider_model)
+        if provider_info:
+            model_class, provider_model = provider_info
+            return model_class(provider_model)
+        
+        # 2. Check if it's a Local Path (e.g. /kaggle/input/...) or HuggingFace ID not in map
+        # If it looks like a path or just a string, we assume it's a LocalHFConnector model
+        # This allows users to pass "/kaggle/input/qwen2.5/transformers/72b-instruct" directly
+        if "/" in model_name or os.path.exists(model_name):
+            print(f"[Factory] Detected custom model path/ID: {model_name}. Using LocalHFConnector.")
+            return LocalHFConnector(model_name)
+
+        raise ValueError(f"Unsupported model specified: {model_name}. Available: {list(MODEL_PROVIDER_MAP.keys())} OR provide a valid path.")
 
 def execute_prompt(model_name: str, prompt: str) -> str:
     chat_model = ChatModelFactory.get_model(model_name)
