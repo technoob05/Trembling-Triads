@@ -260,22 +260,38 @@ class LocalHFConnector(AbstractConnector):
         if max_tokens is None:
             # Auto-detect based on prompt content
             if any(keyword in prompt for keyword in ["Your choice:", "Your response:", ">", "ONE WORD"]):
-                max_tokens = 15  # Strategy choice - very short
+                max_tokens = 8  # Strategy choice - VERY short (1-2 words max)
             else:
                 max_tokens = 80  # Reasoning/meta-prompts - longer
         
         print(f"  [Generating...] Input len: {len(prompt)} chars (max_tokens={max_tokens})", end="\r")
         try:
+            # MUST pass generation_kwargs to override pipeline defaults
             sequences = LocalHFConnector._pipeline(
                 prompt,
-                max_new_tokens=max_tokens,  # Override pipeline default
+                max_new_tokens=max_tokens,  # This DOES get overridden
+                min_new_tokens=1,
+                num_return_sequences=1,
                 eos_token_id=LocalHFConnector._pipeline.tokenizer.eos_token_id,
                 pad_token_id=LocalHFConnector._pipeline.tokenizer.eos_token_id,
-                truncation=True
+                truncation=True,
+                return_full_text=False  # CRITICAL: Don't return prompt in output
             )
-            full_output = sequences[0]['generated_text']
-            # Strip prompt
-            result = full_output.replace(prompt, "").strip()
+            
+            # Extract generated text only
+            if isinstance(sequences, list) and len(sequences) > 0:
+                if 'generated_text' in sequences[0]:
+                    result = sequences[0]['generated_text']
+                else:
+                    result = str(sequences[0])
+            else:
+                result = str(sequences)
+            
+            # Clean up
+            result = result.strip()
+            # Remove prompt if still present
+            if prompt in result:
+                result = result.replace(prompt, "").strip()
             
             print(f"  [Generated] Output len: {len(result)} chars (max={max_tokens})    ")
             return result
@@ -761,8 +777,8 @@ Your reasoning:"""
     
     def _execute_agent_strategy(self, agent, prompt):
         # We handle retry at the execute_prompt level somewhat
-        # Use LOW max_tokens for strategy choice (just need "Cooperate" or "Defect")
-        response = agent.execute_round(prompt, max_tokens=15)
+        # Use VERY LOW max_tokens for strategy choice (just need "Cooperate" or "Defect")
+        response = agent.execute_round(prompt, max_tokens=8)
         
         # Clean and truncate response for display
         display_response = response[:100] + "..." if len(response) > 100 else response
