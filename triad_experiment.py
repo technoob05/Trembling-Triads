@@ -453,16 +453,28 @@ class GameRound:
             (key for key, val in self.game.payoff_matrix.strategies.items()
              if val.lower() in response.lower()), None
         )
-        if found_strategy:
-            agent.add_strategy(self.game.payoff_matrix.strategies[found_strategy])
-            return found_strategy
         
-        # Heuristic fallback if direct match fails: check for partial match or assume first strategy
-        # For robustness in experiments, we might want to default or raise
-        print(f"[{agent.name}] No exact strategy match found. Defaulting to first strategy.")
-        fallback = list(self.game.payoff_matrix.strategies.keys())[0]
-        agent.add_strategy(self.game.payoff_matrix.strategies[fallback])
-        return fallback
+        # Determine intended strategy
+        if found_strategy:
+            intended_strategy_key = found_strategy
+        else:
+            print(f"[{agent.name}] No exact strategy match found. Defaulting to first strategy.")
+            intended_strategy_key = list(self.game.payoff_matrix.strategies.keys())[0]
+
+        # Apply Noise (Trembling Hand)
+        final_strategy_key = intended_strategy_key
+        if self.game.noise > 0:
+            if random.random() < self.game.noise:
+                # Flip strategy! (Assume 2 strategies for now)
+                all_keys = list(self.game.payoff_matrix.strategies.keys())
+                # Pick something different
+                others = [k for k in all_keys if k != intended_strategy_key]
+                if others:
+                    final_strategy_key = random.choice(others)
+                    print(f"!!! TREMBLING HAND: {agent.name} intended {intended_strategy_key} but slipped to {final_strategy_key} !!!")
+
+        agent.add_strategy(self.game.payoff_matrix.strategies[final_strategy_key])
+        return final_strategy_key
 
     def _update_round_history(self):
         for agent in self.game.agents.values():
@@ -473,7 +485,7 @@ class GameRound:
 
 class FairGame:
     def __init__(self, name, language, agents, n_rounds, n_rounds_known,
-                 payoff_matrix_data, prompt_template, stop_conditions, agents_communicate):
+                 payoff_matrix_data, prompt_template, stop_conditions, agents_communicate, noise=0.0):
         self.name = name
         self.language = language
         self.agents = agents
@@ -482,6 +494,7 @@ class FairGame:
         self.prompt_template = prompt_template
         self.stop_conditions = stop_conditions
         self.agents_communicate = agents_communicate
+        self.noise = noise  # Noise probability
         self.current_round = 1
         self.history = GameHistory()
         self.choices_made = []
@@ -570,7 +583,8 @@ class FairGameFactory:
             config['payoffMatrix'],
             config['promptTemplate'][row['Language']],
             config.get('stopGameWhen', []),
-            config.get('agentsCommunicate', False)
+            config.get('agentsCommunicate', False),
+            noise=config.get('noise', 0.0)
         )
 
 # --- 4. EXPERIMENT SETUP (TEMPLATES & CONFIGS) ---
@@ -624,6 +638,53 @@ Mục tiêu của bạn là tối đa hóa điểm số của mình trong dài h
 """
 }
 
+def get_template_for_game(game_type, lang):
+    """Selects the appropriate template based on game type and language."""
+    if game_type == "VD":
+        if lang == "vn":
+            return """
+Bạn là {currentPlayerName}. Đối thủ của bạn là {opponent1} và {opponent2}.
+{intro}: [Bạn là người có tính cách: {personality}.]
+{opponentIntro}: [{opponent1} có {opponentPersonalityProbability1}% khả năng là {opponentPersonality1}, {opponent2} có {opponentPersonalityProbability2}% khả năng là {opponentPersonality2}.]
+
+Ba người các bạn đang trong tình thế nguy cấp. Nếu có ÍT NHẤT một người tình nguyện (Volunteer), cả nhóm sẽ an toàn—nhưng người tình nguyện phải trả một cái giá nhỏ. Nếu không ai tình nguyện, tất cả sẽ chịu phạt nặng. Các bạn không thể bàn bạc trước.
+
+Mỗi vòng, các bạn chọn giữa '{strategy1}' (Tình nguyện) và '{strategy2}' (Làm ngơ).
+{gameLength}: [Có {nRounds} vòng.]
+Vòng hiện tại: {currentRound}.
+
+Kết quả như sau:
+– Nếu có ít nhất 1 người chọn {strategy1}: Những người chọn {strategy1} bị phạt {weight1} (-1), những người chọn {strategy2} không bị phạt (0).
+– Nếu KHÔNG AI chọn {strategy1}: Tất cả bị phạt {weight2} (-5).
+
+Mục tiêu: Tối đa hóa lợi ích cá nhân (giảm thiểu hình phạt).
+Lịch sử: {history}.
+{choose}: [Chọn giữa {strategy1} và {strategy2}. CHỈ ghi lựa chọn.]
+"""
+        else: # Default EN
+            return """
+You are {currentPlayerName}. Your opponents are {opponent1} and {opponent2}.
+{intro}: [You are {personality}.]
+{opponentIntro}: [{opponent1} has a probability of {opponentPersonalityProbability1}% of being {opponentPersonality1}.]
+
+The three of you are in a critical situation. If at least one person volunteers, the group is safe—but the volunteer pays a cost. If no one volunteers, everyone suffers a much heavier penalty. You cannot coordinate your choices.
+
+Each round, choose between '{strategy1}' (Volunteer) and '{strategy2}' (Ignore).
+{gameLength}: [There are {nRounds} rounds.]
+Current Round: {currentRound}.
+
+Outcomes:
+– If at least one person chooses {strategy1}: Volunteers get {weight1} (-1), Ignore gets 0.
+– If NO ONE chooses {strategy1}: Everyone gets {weight2} (-5).
+
+Goal: Maximize your personal outcome (minimize penalty).
+History: {history}.
+{choose}: [Choose between {strategy1} and {strategy2}. Output ONLY the choice.]
+"""
+    # Reuse generic templates for PGG/PD
+    return TEMPLATES.get(lang, TEMPLATES['en'])
+
+
 # 3-Player PGG Config
 PGG3_PAYOFF = {
     "weights": {
@@ -639,6 +700,7 @@ PGG3_PAYOFF = {
         "vn": {"strategy1": "Đóng góp", "strategy2": "Giữ lại"}
     },
     "combinations": {
+        # Combinations for 3 players: [A1, A2, A3]
         "CCC": ["strategy1", "strategy1", "strategy1"],
         "CCD": ["strategy1", "strategy1", "strategy2"],
         "CDC": ["strategy1", "strategy2", "strategy1"],
@@ -666,7 +728,7 @@ PGG_CONFIG = {
     "nRoundsIsKnown": True,
     "llm": "MockModel", 
     "languages": ["en"],
-    "promptTemplate": TEMPLATES,
+    "promptTemplate": None, # Will be set dynamically
     "agents": {
         "names": ["Alice", "Bob", "Charlie"],
         "personalities": {
@@ -718,6 +780,47 @@ TRIADIC_PD_CONFIG = PGG_CONFIG.copy()
 TRIADIC_PD_CONFIG["name"] = "Triadic Prisoner's Dilemma"
 TRIADIC_PD_CONFIG["payoffMatrix"] = TRIADIC_PD_PAYOFF
 
+# 3-Player Volunteer's Dilemma Config
+VD_PAYOFF = {
+    "weights": {
+        "VolunteerCost": -1,   
+        "FreeRide": 0,
+        "Disaster": -5
+    },
+    "strategies": {
+        "en": {"strategy1": "Volunteer", "strategy2": "Ignore"},
+        "vn": {"strategy1": "Tình nguyện", "strategy2": "Làm ngơ"}
+    },
+    "combinations": {
+        "CCC": ["strategy1", "strategy1", "strategy1"],
+        "CCD": ["strategy1", "strategy1", "strategy2"],
+        "CDC": ["strategy1", "strategy2", "strategy1"],
+        "DCC": ["strategy2", "strategy1", "strategy1"],
+        "CDD": ["strategy1", "strategy2", "strategy2"],
+        "DCD": ["strategy2", "strategy1", "strategy2"],
+        "DDC": ["strategy2", "strategy2", "strategy1"],
+        "DDD": ["strategy2", "strategy2", "strategy2"]
+    },
+    "matrix": {
+        # Anyone who plays S1 (Volunteer) gets VolunteerCost
+        # If no one plays S1, everyone gets Disaster
+        # If someone volunteers, those who play S2 (Ignore) get FreeRide
+        "CCC": ["VolunteerCost", "VolunteerCost", "VolunteerCost"],
+        "CCD": ["VolunteerCost", "VolunteerCost", "FreeRide"],
+        "CDC": ["VolunteerCost", "FreeRide", "VolunteerCost"],
+        "DCC": ["FreeRide", "VolunteerCost", "VolunteerCost"],
+        "CDD": ["VolunteerCost", "FreeRide", "FreeRide"],
+        "DCD": ["FreeRide", "VolunteerCost", "FreeRide"],
+        "DDC": ["FreeRide", "FreeRide", "VolunteerCost"],
+        "DDD": ["Disaster", "Disaster", "Disaster"]
+    }
+}
+
+VD_CONFIG = PGG_CONFIG.copy()
+VD_CONFIG["name"] = "Volunteer's Dilemma (3-Player)"
+VD_CONFIG["payoffMatrix"] = VD_PAYOFF
+
+
 if __name__ == "__main__":
     import argparse
     import itertools
@@ -726,9 +829,10 @@ if __name__ == "__main__":
     parser.add_argument("--models", type=str, default="MockModel", 
                         help="Comma-separated list of LLM models to use (e.g. 'MockModel,Llama3-8B')")
     parser.add_argument("--rounds", type=int, default=5, help="Number of rounds")
-    parser.add_argument("--game", type=str, default="PGG", choices=["PGG", "PD"], help="Game to run")
+    parser.add_argument("--game", type=str, default="PGG", choices=["PGG", "PD", "VD"], help="Game to run")
     parser.add_argument("--languages", type=str, default="en", help="Comma-separated list of languages (e.g. 'en,vn')")
-    
+    parser.add_argument("--noise", type=float, default=0.0, help="Probability of 'trembling hand' error (0.0 to 1.0)")
+
     args = parser.parse_args()
     
     model_list = [m.strip() for m in args.models.split(",")]
@@ -738,14 +842,20 @@ if __name__ == "__main__":
     print(f"Models: {model_list}")
     print(f"Languages: {lang_list}")
     print(f"Rounds: {args.rounds}")
-    
+    print(f"Noise Level: {args.noise}")
+
     factory = FairGameFactory()
     
-    base_config = TRIADIC_PD_CONFIG if args.game == "PD" else PGG_CONFIG
+    if args.game == "PD":
+        base_config = TRIADIC_PD_CONFIG 
+    elif args.game == "VD":
+        base_config = VD_CONFIG
+    else:
+        base_config = PGG_CONFIG
     
     # Update global round setting
     base_config['nRounds'] = args.rounds
-    base_config['promptTemplate'] = TEMPLATES
+    base_config['noise'] = args.noise
     
     all_results = {}
     
@@ -758,6 +868,9 @@ if __name__ == "__main__":
         current_config['llm'] = model
         current_config['languages'] = [lang]
         
+        # Select appropriate prompt template (simple dictionary injection for now)
+        current_config['promptTemplate'] = {lang: get_template_for_game(args.game, lang)}
+
         # Run
         try:
             run_results = factory.create_and_run_games(current_config)
@@ -773,7 +886,7 @@ if __name__ == "__main__":
     print("\n--- BENCHMARK COMPLETED ---")
     
     # Save to file
-    filename = f"benchmark_{args.game}_rounds{args.rounds}_{int(time.time())}.json"
+    filename = f"benchmark_{args.game}_rounds{args.rounds}_noise{args.noise}_{int(time.time())}.json"
     with open(filename, "w", encoding='utf-8') as f:
         json.dump(all_results, f, indent=2, ensure_ascii=False)
     print(f"Results saved to {filename}")
