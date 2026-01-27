@@ -55,7 +55,7 @@ check_and_install_dependencies()
 
 class AbstractConnector(abc.ABC):
     @abc.abstractmethod
-    def send_prompt(self, prompt: str) -> str:
+    def send_prompt(self, prompt: str, max_tokens: int = None) -> str:
         pass
 
 class OpenAIConnector(AbstractConnector):
@@ -69,33 +69,36 @@ class OpenAIConnector(AbstractConnector):
         except ImportError:
             self.client = None
 
-    def send_prompt(self, prompt: str) -> str:
+    def send_prompt(self, prompt: str, max_tokens: int = None) -> str:
         if not self.client:
             return "[Error: OpenAI API Key missing or module not installed]"
         messages = [{"role": "user", "content": prompt}]
-        completion = self.client.chat.completions.create(
-            model=self.provider_model,
-            temperature=self.temperature,
-            messages=messages
-        )
+        kwargs = {
+            "model": self.provider_model,
+            "temperature": self.temperature,
+            "messages": messages
+        }
+        if max_tokens:
+            kwargs["max_tokens"] = max_tokens
+        completion = self.client.chat.completions.create(**kwargs)
         return completion.choices[0].message.content
 
 class AnthropicConnector(AbstractConnector):
     def __init__(self, provider_model: str, max_tokens: int = 1024):
         self.api_key = os.getenv("API_KEY_ANTHROPIC")
         self.provider_model = provider_model
-        self.max_tokens = max_tokens
+        self.default_max_tokens = max_tokens
         try:
             from anthropic import Anthropic
             self.client = Anthropic(api_key=self.api_key) if self.api_key else None
         except ImportError:
             self.client = None
 
-    def send_prompt(self, prompt: str) -> str:
+    def send_prompt(self, prompt: str, max_tokens: int = None) -> str:
         if not self.client:
             return "[Error: Anthropic API Key missing or module not installed]"
         response = self.client.messages.create(
-            max_tokens=self.max_tokens,
+            max_tokens=max_tokens or self.default_max_tokens,
             messages=[{"role": "user", "content": prompt}],
             model=self.provider_model,
         )
@@ -177,7 +180,7 @@ class LocalHFConnector(AbstractConnector):
                     "text-generation",
                     model=model,
                     tokenizer=tokenizer,
-                    max_new_tokens=50,  # Enough for reasoning (1-2 sentences)
+                    max_new_tokens=15,  # Default low (overridden per prompt type)
                     do_sample=False,     # Deterministic for game responses
                     temperature=0.1,     # Lower temperature for more focused responses
                     top_p=0.9
@@ -233,7 +236,7 @@ class LocalHFConnector(AbstractConnector):
                 "text-generation",
                 model=model,
                 tokenizer=tokenizer,
-                max_new_tokens=50,  # Enough for reasoning (1-2 sentences)
+                max_new_tokens=15,  # Default low (overridden per prompt type)
                 do_sample=False,    # Deterministic for game responses
                 temperature=0.1,    # Lower temperature for more focused responses
                 top_p=0.9
@@ -245,24 +248,36 @@ class LocalHFConnector(AbstractConnector):
             print(f"CRITICAL ERROR LOADING MODEL: {e}")
             raise e
 
-    def send_prompt(self, prompt: str) -> str:
+    def send_prompt(self, prompt: str, max_tokens: int = None) -> str:
+        """
+        Send prompt with optional max_tokens override.
+        Use low max_tokens for strategy, higher for reasoning/meta-prompts.
+        """
         if not LocalHFConnector._pipeline:
              self._load_model()
         
-        print(f"  [Generating...] Input len: {len(prompt)} chars", end="\r")
+        # Determine appropriate max_new_tokens
+        if max_tokens is None:
+            # Auto-detect based on prompt content
+            if any(keyword in prompt for keyword in ["Your choice:", "Your response:", ">", "ONE WORD"]):
+                max_tokens = 15  # Strategy choice - very short
+            else:
+                max_tokens = 80  # Reasoning/meta-prompts - longer
+        
+        print(f"  [Generating...] Input len: {len(prompt)} chars (max_tokens={max_tokens})", end="\r")
         try:
             sequences = LocalHFConnector._pipeline(
                 prompt,
+                max_new_tokens=max_tokens,  # Override pipeline default
                 eos_token_id=LocalHFConnector._pipeline.tokenizer.eos_token_id,
                 pad_token_id=LocalHFConnector._pipeline.tokenizer.eos_token_id,
                 truncation=True
-                # max_length removed to avoid conflict with max_new_tokens
             )
             full_output = sequences[0]['generated_text']
             # Strip prompt
             result = full_output.replace(prompt, "").strip()
             
-            print(f"  [Generated] Output len: {len(result)} chars    ")
+            print(f"  [Generated] Output len: {len(result)} chars (max={max_tokens})    ")
             return result
         except KeyboardInterrupt:
             print("\n[INFO] Generation interrupted by user (Ctrl+C)")
@@ -277,7 +292,7 @@ class MockConnector(AbstractConnector):
     def __init__(self, provider_model: str):
         self.provider_model = provider_model
 
-    def send_prompt(self, prompt: str) -> str:
+    def send_prompt(self, prompt: str, max_tokens: int = None) -> str:
         # Randomly choose consistent strategies for testing
         return random.choice(["Contribute", "Keep"])
 
@@ -323,12 +338,16 @@ class ChatModelFactory:
 
         raise ValueError(f"Unsupported model specified: {model_name}. Available: {list(MODEL_PROVIDER_MAP.keys())} OR provide a valid path.")
 
-def execute_prompt(model_name: str, prompt: str) -> str:
+def execute_prompt(model_name: str, prompt: str, max_tokens: int = None) -> str:
     chat_model = ChatModelFactory.get_model(model_name)
     # Simple retry logic
     for _ in range(3):
         try:
-            return chat_model.send_prompt(prompt)
+            # Pass max_tokens if connector supports it (LocalHFConnector does)
+            if hasattr(chat_model, 'send_prompt') and 'max_tokens' in chat_model.send_prompt.__code__.co_varnames:
+                return chat_model.send_prompt(prompt, max_tokens=max_tokens)
+            else:
+                return chat_model.send_prompt(prompt)
         except Exception as e:
             print(f"Error calling LLM: {e}. Retrying...")
             time.sleep(2)
@@ -412,8 +431,8 @@ class Agent:
         self.personality = personality
         self.opponent_personality_prob = opponent_personality_prob
 
-    def execute_round(self, prompt: str) -> str:
-        return execute_prompt(self.llm_service, prompt)
+    def execute_round(self, prompt: str, max_tokens: int = None) -> str:
+        return execute_prompt(self.llm_service, prompt, max_tokens=max_tokens)
 
     def add_strategy(self, strategy: str):
         self.strategies.append(strategy)
@@ -604,19 +623,19 @@ Answer with just the name or 'None'."""
             # Question 3: Strategy Understanding
             strategy_q = f"""What is your main goal in this game? Answer in one short sentence."""
             
-            # Execute validation prompts
+            # Execute validation prompts with higher max_tokens for full answers
             try:
                 print(f"  [{agent.name}] Testing payoff understanding...")
-                payoff_ans = agent.execute_round(payoff_q)[:100]
+                payoff_ans = agent.execute_round(payoff_q, max_tokens=60)[:100]
                 
                 if history_q:
                     print(f"  [{agent.name}] Testing history recall...")
-                    history_ans = agent.execute_round(history_q)[:100]
+                    history_ans = agent.execute_round(history_q, max_tokens=30)[:100]
                 else:
                     history_ans = "N/A (Round 1)"
                 
                 print(f"  [{agent.name}] Testing strategy understanding...")
-                strategy_ans = agent.execute_round(strategy_q)[:100]
+                strategy_ans = agent.execute_round(strategy_q, max_tokens=60)[:100]
                 
                 # Log meta-prompt results
                 self.game.history.update_round(self.round_number, agent.name, {
@@ -674,8 +693,8 @@ You can punish multiple people by listing names (e.g., 'Bob, Charlie') or respon
 Output ONLY the names or 'None'. Do NOT explain your reasoning.
 
 Your response:"""
-            # Execute
-            response = agent.execute_round(punish_prompt).strip()
+            # Execute with low max_tokens (just need names or "None")
+            response = agent.execute_round(punish_prompt, max_tokens=20).strip()
             
             # Clean and truncate for display
             display_response = response[:100] + "..." if len(response) > 100 else response
@@ -733,8 +752,8 @@ In 1-2 short sentences, explain WHY you made this choice. What factors influence
 Your reasoning:"""
         
         try:
-            # Temporarily increase max_new_tokens for reasoning
-            reasoning_response = agent.execute_round(reasoning_prompt)
+            # Use higher max_tokens for reasoning (80 tokens = ~50-60 words = 1-2 sentences)
+            reasoning_response = agent.execute_round(reasoning_prompt, max_tokens=80)
             return reasoning_response.strip()[:300]  # Limit to 300 chars
         except Exception as e:
             print(f"[{agent.name}] Failed to get reasoning: {e}")
@@ -742,7 +761,8 @@ Your reasoning:"""
     
     def _execute_agent_strategy(self, agent, prompt):
         # We handle retry at the execute_prompt level somewhat
-        response = agent.execute_round(prompt)
+        # Use LOW max_tokens for strategy choice (just need "Cooperate" or "Defect")
+        response = agent.execute_round(prompt, max_tokens=15)
         
         # Clean and truncate response for display
         display_response = response[:100] + "..." if len(response) > 100 else response
@@ -1199,7 +1219,9 @@ if __name__ == "__main__":
     # Overrides
     config['nRounds'] = args.rounds
     config['noise'] = args.noise
-    config['punishment_enabled'] = args.punishment
+    # Only override punishment for PGG (PD and VD don't have punishment)
+    if args.game == "PGG":
+        config['punishment_enabled'] = args.punishment
     config['meta_prompt_enabled'] = args.meta_prompt
     config['meta_prompt_rounds'] = [int(r.strip()) for r in args.meta_rounds.split(',')]
     config['extract_reasoning'] = args.reasoning
