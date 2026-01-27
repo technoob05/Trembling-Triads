@@ -112,13 +112,27 @@ class MistralConnector(AbstractConnector):
             self.client = None
 
     def send_prompt(self, prompt: str) -> str:
-        if not self.client:
-            return "[Error: Mistral API Key missing or module not installed]"
-        response = self.client.chat.complete(
-            model=self.provider_model,
-            messages=[{"role": "user", "content": prompt}]
-        )
-        return response.choices[0].message.content
+        # Check if model is loaded (singleton pattern might require explicit check if somehow accessed cleanly, but usually it's fine)
+        if hasattr(self, 'provider_model') and LocalHFConnector._model_name != self.provider_model:
+             self._load_model()
+             
+        if not LocalHFConnector._pipeline:
+             # Should have been loaded by init or just above
+             self._load_model()
+        
+        print(f"  [Generating...] Input len: {len(prompt)} chars", end="\r")
+        try:
+            response = LocalHFConnector._pipeline(prompt)
+            output = response[0]['generated_text']
+            # If using pipeline with text-generation, it might include prompt. Strip it if needed.
+            if output.startswith(prompt):
+                output = output[len(prompt):]
+            
+            print(f"  [Generated] Output len: {len(output)} chars    ")
+            return output
+        except Exception as e:
+            print(f"\n[ERROR] Generation failed: {e}")
+            return "{}"
 
 class LocalHFConnector(AbstractConnector):
     """
