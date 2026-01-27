@@ -1,18 +1,45 @@
+# --- KAGGLE SETUP BLOCK ---
+# If you are pasting this into a Kaggle Notebook, you can run this block to ensure dependencies are installed.
+# Or the script will attempt to install them automatically.
+"""
+!pip install -q -U openai anthropic mistralai pandas torch transformers accelerate bitsandbytes
+"""
+
+import sys
 import os
 import re
 import json
 import abc
 import time
 import random
+import subprocess
+import importlib.util
 from typing import Dict, Any, List, Tuple
-from enum import Enum
-from dataclasses import dataclass
 
-# --- 1. SETTINGS & CONSTANTS ---
+# --- 1. AUTO-SETUP & ENVIRONMENT ---
 
-# Default API setup (User should replace these or set ENV variables)
-# os.environ["API_KEY_OPENAI"] = "sk-..."
-# os.environ["API_KEY_ANTHROPIC"] = "sk-..."
+REQUIRED_PACKAGES = [
+    "openai", "anthropic", "mistralai", "pandas", 
+    "torch", "transformers", "accelerate", "bitsandbytes"
+]
+
+def check_and_install_dependencies():
+    """Checks for required packages and installs them if missing (useful for Kaggle/Colab)."""
+    missing = []
+    for pkg in REQUIRED_PACKAGES:
+        if importlib.util.find_spec(pkg) is None:
+            missing.append(pkg)
+    
+    if missing:
+        print(f"Missing packages detected: {missing}. Installing...")
+        try:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "-U"] + missing)
+            print("Dependencies installed successfully.")
+        except Exception as e:
+            print(f"WARNING: Automatic installation failed: {e}. Please install manually via '!pip install ...'")
+
+# Run setup
+check_and_install_dependencies()
 
 # --- 2. LLM CONNECTORS ---
 
@@ -24,20 +51,17 @@ class AbstractConnector(abc.ABC):
 class OpenAIConnector(AbstractConnector):
     def __init__(self, provider_model: str, temperature: float = 1.0):
         self.api_key = os.getenv("API_KEY_OPENAI")
-        if not self.api_key:
-            print("WARNING: API_KEY_OPENAI not set. OpenAI calls will fail.")
         self.provider_model = provider_model
         self.temperature = temperature
-        # Lazy import to avoid hard dependency if not used
         try:
             from openai import OpenAI
-            self.client = OpenAI(api_key=self.api_key)
+            self.client = OpenAI(api_key=self.api_key) if self.api_key else None
         except ImportError:
             self.client = None
 
     def send_prompt(self, prompt: str) -> str:
         if not self.client:
-            raise ImportError("openai module not installed.")
+            return "[Error: OpenAI API Key missing or module not installed]"
         messages = [{"role": "user", "content": prompt}]
         completion = self.client.chat.completions.create(
             model=self.provider_model,
@@ -49,19 +73,17 @@ class OpenAIConnector(AbstractConnector):
 class AnthropicConnector(AbstractConnector):
     def __init__(self, provider_model: str, max_tokens: int = 1024):
         self.api_key = os.getenv("API_KEY_ANTHROPIC")
-        if not self.api_key:
-            print("WARNING: API_KEY_ANTHROPIC not set. Anthropic calls will fail.")
         self.provider_model = provider_model
         self.max_tokens = max_tokens
         try:
             from anthropic import Anthropic
-            self.client = Anthropic(api_key=self.api_key)
+            self.client = Anthropic(api_key=self.api_key) if self.api_key else None
         except ImportError:
             self.client = None
 
     def send_prompt(self, prompt: str) -> str:
         if not self.client:
-            raise ImportError("anthropic module not installed.")
+            return "[Error: Anthropic API Key missing or module not installed]"
         response = self.client.messages.create(
             max_tokens=self.max_tokens,
             messages=[{"role": "user", "content": prompt}],
@@ -72,23 +94,104 @@ class AnthropicConnector(AbstractConnector):
 class MistralConnector(AbstractConnector):
     def __init__(self, provider_model: str):
         self.api_key = os.getenv("API_KEY_MISTRAL")
-        if not self.api_key:
-            print("WARNING: API_KEY_MISTRAL not set.")
         self.provider_model = provider_model
         try:
             from mistralai import Mistral
-            self.client = Mistral(api_key=self.api_key)
+            self.client = Mistral(api_key=self.api_key) if self.api_key else None
         except ImportError:
             self.client = None
 
     def send_prompt(self, prompt: str) -> str:
         if not self.client:
-            raise ImportError("mistralai module not installed.")
+            return "[Error: Mistral API Key missing or module not installed]"
         response = self.client.chat.complete(
             model=self.provider_model,
             messages=[{"role": "user", "content": prompt}]
         )
         return response.choices[0].message.content
+
+class LocalHFConnector(AbstractConnector):
+    """
+    Connector for running HuggingFace models locally (e.g., on Kaggle H100).
+    Uses bitsandbytes 4-bit quantization for efficiency if available.
+    """
+    _pipeline = None
+    _model_name = None
+
+    def __init__(self, provider_model: str):
+        self.provider_model = provider_model
+        # Singleton-ish pattern to avoid reloading model for every agent if same model
+        if LocalHFConnector._model_name != provider_model:
+            self._load_model()
+    
+    def _load_model(self):
+        print(f"Loading Local Model: {self.provider_model} onto GPU...")
+        try:
+            import torch
+            from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline, BitsAndBytesConfig
+            
+            # Login to HF if token exists in Kaggle secrets
+            try:
+                from kaggle_secrets import UserSecretsClient
+                from huggingface_hub import login
+                secrets = UserSecretsClient()
+                hf_token = secrets.get_secret("HF_TOKEN")
+                if hf_token: 
+                    login(token=hf_token)
+                    print("Logged in to Hugging Face Hub successfully.")
+            except ImportError:
+                pass # Not on Kaggle or secrets module missing
+            except Exception as e:
+                print(f"Note: Could not retrieve HF_TOKEN: {e}")
+
+            # Quantization Config for H100/A100 optimization
+            bnb_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=torch.float16,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_use_double_quant=True,
+            )
+
+            tokenizer = AutoTokenizer.from_pretrained(self.provider_model)
+            model = AutoModelForCausalLM.from_pretrained(
+                self.provider_model,
+                quantization_config=bnb_config,
+                device_map="auto",
+                trust_remote_code=True
+            )
+            
+            LocalHFConnector._pipeline = pipeline(
+                "text-generation",
+                model=model,
+                tokenizer=tokenizer,
+                max_new_tokens=50, # Optimized for short strategy responses
+                do_sample=True,
+                temperature=0.7,
+                top_p=0.9
+            )
+            LocalHFConnector._model_name = self.provider_model
+            print("Model loaded successfully.")
+            
+        except Exception as e:
+            print(f"CRITICAL ERROR LOADING MODEL: {e}")
+            raise e
+
+    def send_prompt(self, prompt: str) -> str:
+        if not LocalHFConnector._pipeline:
+            return "[Error: Model pipeline not initialized]"
+        
+        # Simple prompt formatting
+        sequences = LocalHFConnector._pipeline(
+            prompt,
+            eos_token_id=LocalHFConnector._pipeline.tokenizer.eos_token_id,
+            pad_token_id=LocalHFConnector._pipeline.tokenizer.eos_token_id
+        )
+        # Extract only the generated text (basic stripping)
+        full_output = sequences[0]['generated_text']
+        # Try to isolate the new part if possible, or just return the whole thing
+        # Usually for chat models we need strict template application, but here we assume prompt is passed raw
+        return full_output.replace(prompt, "").strip()
+
 
 class MockConnector(AbstractConnector):
     """For testing without API keys"""
@@ -99,11 +202,15 @@ class MockConnector(AbstractConnector):
         # Randomly choose consistent strategies for testing
         return random.choice(["Contribute", "Keep"])
 
+
 MODEL_PROVIDER_MAP = {
     "Claude35Haiku": (AnthropicConnector, "claude-3-5-haiku-20241022"),
     "MistralLarge": (MistralConnector, "mistral-large-latest"),
     "OpenAIGPT4o": (OpenAIConnector, "gpt-4o"),
     "MockModel": (MockConnector, "mock"),
+    "Llama3-8B": (LocalHFConnector, "meta-llama/Meta-Llama-3-8B-Instruct"),
+    "Llama3-70B": (LocalHFConnector, "meta-llama/Meta-Llama-3-70B-Instruct"), # Requires H100 80GB
+    "Mistral-7B": (LocalHFConnector, "mistralai/Mistral-7B-Instruct-v0.2")
 }
 
 class ChatModelFactory:
@@ -111,7 +218,7 @@ class ChatModelFactory:
     def get_model(model_name: str):
         provider_info = MODEL_PROVIDER_MAP.get(model_name)
         if not provider_info:
-            raise ValueError(f"Unsupported model specified: {model_name}")
+            raise ValueError(f"Unsupported model specified: {model_name}. Available: {list(MODEL_PROVIDER_MAP.keys())}")
         model_class, provider_model = provider_info
         return model_class(provider_model)
 
@@ -531,9 +638,9 @@ PGG3_PAYOFF = {
 
 PGG_CONFIG = {
     "name": "Public Goods Game (3-Player)",
-    "nRounds": 5, # Test with 5 rounds
+    "nRounds": 5, 
     "nRoundsIsKnown": True,
-    "llm": "MockModel", # Change to "OpenAIGPT4o" or "Claude35Haiku"
+    "llm": "MockModel", 
     "languages": ["en"],
     "promptTemplate": {"en": DEFAULT_TEMPLATE},
     "agents": {
@@ -588,10 +695,10 @@ TRIADIC_PD_CONFIG["payoffMatrix"] = TRIADIC_PD_PAYOFF
 if __name__ == "__main__":
     import argparse
     
-    parser = argparse.ArgumentParser(description="Run FAIRGAME Experiments")
+    parser = argparse.ArgumentParser(description="Run FAIRGAME Experiments (Kaggle Ready)")
     parser.add_argument("--model", type=str, default="MockModel", 
-                        choices=["MockModel", "OpenAIGPT4o", "Claude35Haiku", "MistralLarge"],
-                        help="LLM provider model to use")
+                        choices=["MockModel", "OpenAIGPT4o", "Claude35Haiku", "MistralLarge", "Llama3-8B", "Llama3-70B", "Mistral-7B"],
+                        help="LLM provider model to use. Use 'Llama3-70B' for Kaggle H100.")
     parser.add_argument("--rounds", type=int, default=5, help="Number of rounds")
     parser.add_argument("--game", type=str, default="PGG", choices=["PGG", "PD"], help="Game to run")
     
@@ -599,6 +706,10 @@ if __name__ == "__main__":
     
     print(f"Initializing FAIRGAME Standalone Experiment: {args.game} with {args.model} for {args.rounds} rounds...")
     
+    # Auto-detect if on Kaggle and no model specified meant likely wanting local GPU
+    if args.model == "MockModel" and "KAGGLE_KERNEL_RUN_TYPE" in os.environ:
+        print("Detected Kaggle environment. Tip: Use --model Llama3-70B to leverage H100 GPU.")
+
     factory = FairGameFactory()
     
     if args.game == "PD":
