@@ -130,7 +130,14 @@ class LocalHFConnector(AbstractConnector):
             import torch
             from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline, BitsAndBytesConfig
             
-            # Quantization Config for H100/A100 optimization
+            # Debugging Path
+            if os.path.exists(self.provider_model):
+                print(f"[DEBUG] Model path exists: {self.provider_model}")
+                print(f"[DEBUG] Directory contents: {os.listdir(self.provider_model)}")
+            else:
+                print(f"[WARNING] Model path NOT FOUND on disk: {self.provider_model}. Attempting to download from HF Hub...")
+
+            # Handle 4-bit loading
             bnb_config = BitsAndBytesConfig(
                 load_in_4bit=True,
                 bnb_4bit_compute_dtype=torch.float16,
@@ -138,12 +145,25 @@ class LocalHFConnector(AbstractConnector):
                 bnb_4bit_use_double_quant=True,
             )
 
-            tokenizer = AutoTokenizer.from_pretrained(self.provider_model)
+            try:
+                tokenizer = AutoTokenizer.from_pretrained(self.provider_model, trust_remote_code=True)
+            except Exception as e:
+                print(f"[WARNING] Tokenizer load failed (maybe not in this dir?): {e}. Trying generic Qwen/Llama tokenizer...")
+                # Fallback if tokenizer files are missing (common in some raw weight dumps)
+                if "qwen" in self.provider_model.lower():
+                     tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-72B-Instruct", trust_remote_code=True)
+                elif "llama" in self.provider_model.lower() or "gpt-oss" in self.provider_model.lower():
+                     tokenizer = AutoTokenizer.from_pretrained("meta-llama/Meta-Llama-3-70B-Instruct", trust_remote_code=True)
+                else:
+                    raise e
+
             model = AutoModelForCausalLM.from_pretrained(
                 self.provider_model,
                 quantization_config=bnb_config,
                 device_map="auto",
-                trust_remote_code=True
+                trust_remote_code=True,
+                # If path exists, force local only to sure we don't accidentally hit the Hub
+                local_files_only=os.path.exists(self.provider_model) 
             )
             
             LocalHFConnector._pipeline = pipeline(
