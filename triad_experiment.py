@@ -208,6 +208,7 @@ MODEL_PROVIDER_MAP = {
     "DeepSeek-R1-70B": (LocalHFConnector, "deepseek-ai/DeepSeek-R1-Distill-Llama-70B"),
     "Gemma2-9B": (LocalHFConnector, "google/gemma-2-9b-it"),
     "Gemma2-27B": (LocalHFConnector, "google/gemma-2-27b-it"),
+    "GPT-OSS-120B": (LocalHFConnector, "unsloth/gpt-oss-120b"),
 }
 
 class ChatModelFactory:
