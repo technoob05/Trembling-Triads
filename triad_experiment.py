@@ -112,27 +112,13 @@ class MistralConnector(AbstractConnector):
             self.client = None
 
     def send_prompt(self, prompt: str) -> str:
-        # Check if model is loaded (singleton pattern might require explicit check if somehow accessed cleanly, but usually it's fine)
-        if hasattr(self, 'provider_model') and LocalHFConnector._model_name != self.provider_model:
-             self._load_model()
-             
-        if not LocalHFConnector._pipeline:
-             # Should have been loaded by init or just above
-             self._load_model()
-        
-        print(f"  [Generating...] Input len: {len(prompt)} chars", end="\r")
-        try:
-            response = LocalHFConnector._pipeline(prompt)
-            output = response[0]['generated_text']
-            # If using pipeline with text-generation, it might include prompt. Strip it if needed.
-            if output.startswith(prompt):
-                output = output[len(prompt):]
-            
-            print(f"  [Generated] Output len: {len(output)} chars    ")
-            return output
-        except Exception as e:
-            print(f"\n[ERROR] Generation failed: {e}")
-            return "{}"
+        if not self.client:
+            return "[Error: Mistral API Key missing or module not installed]"
+        response = self.client.chat.complete(
+            model=self.provider_model,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return response.choices[0].message.content
 
 class LocalHFConnector(AbstractConnector):
     """
@@ -260,19 +246,24 @@ class LocalHFConnector(AbstractConnector):
 
     def send_prompt(self, prompt: str) -> str:
         if not LocalHFConnector._pipeline:
-            return "[Error: Model pipeline not initialized]"
+             self._load_model()
         
-        # Simple prompt formatting
-        sequences = LocalHFConnector._pipeline(
-            prompt,
-            eos_token_id=LocalHFConnector._pipeline.tokenizer.eos_token_id,
-            pad_token_id=LocalHFConnector._pipeline.tokenizer.eos_token_id
-        )
-        # Extract only the generated text (basic stripping)
-        full_output = sequences[0]['generated_text']
-        # Try to isolate the new part if possible, or just return the whole thing
-        # Usually for chat models we need strict template application, but here we assume prompt is passed raw
-        return full_output.replace(prompt, "").strip()
+        print(f"  [Generating...] Input len: {len(prompt)} chars", end="\r")
+        try:
+            sequences = LocalHFConnector._pipeline(
+                prompt,
+                eos_token_id=LocalHFConnector._pipeline.tokenizer.eos_token_id,
+                pad_token_id=LocalHFConnector._pipeline.tokenizer.eos_token_id
+            )
+            full_output = sequences[0]['generated_text']
+            # Strip prompt
+            result = full_output.replace(prompt, "").strip()
+            
+            print(f"  [Generated] Output len: {len(result)} chars    ")
+            return result
+        except Exception as e:
+            print(f"\n[ERROR] Generation failed: {e}")
+            return "{}"
 
 
 class MockConnector(AbstractConnector):
