@@ -177,9 +177,9 @@ class LocalHFConnector(AbstractConnector):
                     "text-generation",
                     model=model,
                     tokenizer=tokenizer,
-                    max_new_tokens=50,
-                    do_sample=True,
-                    temperature=0.7,
+                    max_new_tokens=10,  # Reduced from 50 to force shorter responses
+                    do_sample=False,     # Deterministic for game responses
+                    temperature=0.1,     # Lower temperature for more focused responses
                     top_p=0.9
                 )
                 LocalHFConnector._model_name = self.provider_model
@@ -232,9 +232,9 @@ class LocalHFConnector(AbstractConnector):
                 "text-generation",
                 model=model,
                 tokenizer=tokenizer,
-                max_new_tokens=50, # Optimized for short strategy responses
-                do_sample=True,
-                temperature=0.7,
+                max_new_tokens=10, # Reduced from 50 to force shorter responses
+                do_sample=False,    # Deterministic for game responses
+                temperature=0.1,    # Lower temperature for more focused responses
                 top_p=0.9
             )
             LocalHFConnector._model_name = self.provider_model
@@ -253,7 +253,9 @@ class LocalHFConnector(AbstractConnector):
             sequences = LocalHFConnector._pipeline(
                 prompt,
                 eos_token_id=LocalHFConnector._pipeline.tokenizer.eos_token_id,
-                pad_token_id=LocalHFConnector._pipeline.tokenizer.eos_token_id
+                pad_token_id=LocalHFConnector._pipeline.tokenizer.eos_token_id,
+                truncation=True,
+                max_length=1024  # Prevent excessive memory usage
             )
             full_output = sequences[0]['generated_text']
             # Strip prompt
@@ -261,9 +263,12 @@ class LocalHFConnector(AbstractConnector):
             
             print(f"  [Generated] Output len: {len(result)} chars    ")
             return result
+        except KeyboardInterrupt:
+            print("\n[INFO] Generation interrupted by user (Ctrl+C)")
+            raise  # Re-raise to stop the experiment
         except Exception as e:
             print(f"\n[ERROR] Generation failed: {e}")
-            return "{}"
+            return "Cooperate"  # Default fallback instead of "{}"
 
 
 class MockConnector(AbstractConnector):
@@ -347,14 +352,20 @@ class GameHistory:
             agents_data = self.rounds[round_key]
             round_list = []
             for agent_name, data in agents_data.items():
-                round_list.append({
+                entry = {
                     "agent": agent_name,
                     "message": data.get("message"),
                     "intended_strategy": data.get("intended_strategy"), # Log intention
                     "is_noise": data.get("is_noise", False),            # Log noise event
                     "strategy": data.get("strategy"),                   # Log actual result
                     "score": data.get("score"),
-                })
+                    "reasoning": data.get("reasoning", "No reasoning provided")  # Log reasoning
+                }
+                # Add meta-prompt data if available
+                if "meta_prompt" in data:
+                    entry["meta_prompt_validation"] = data["meta_prompt"]
+                
+                round_list.append(entry)
             summary[round_key] = round_list
         return summary
 
@@ -515,6 +526,10 @@ class GameRound:
         self.round_number = game.current_round
 
     def run(self):
+        # Meta-Prompting: Test comprehension at specific rounds (like "Nicer than Human" paper)
+        if self.game.meta_prompt_enabled and self.round_number in self.game.meta_prompt_rounds:
+            self._execute_meta_prompts()
+        
         # Phase 1: Communication (Optional)
         if self.game.agents_communicate:
             self._execute_communication_phase()
@@ -535,6 +550,59 @@ class GameRound:
 
         return round_strategies
 
+    def _execute_meta_prompts(self):
+        """
+        Meta-prompting technique from 'Nicer than Human' paper to validate
+        that agents understand game rules and can parse history.
+        """
+        print(f"\n>>> META-PROMPT VALIDATION (Round {self.round_number}) <<<")
+        
+        for agent in self.game.agents.values():
+            opponents = [a for a in self.game.agents.values() if a != agent]
+            
+            # Question 1: Payoff Understanding
+            payoff_q = f"""You are playing a game with payoffs. Answer briefly:
+If you Cooperate and your opponent Defects, what happens to your score compared to if you both Cooperate?
+Answer in one short sentence."""
+            
+            # Question 2: History Recall
+            if self.round_number > 1:
+                history_q = f"""Based on the game history so far, which opponent has defected the most?
+Answer with just the name or 'None'."""
+            else:
+                history_q = None
+            
+            # Question 3: Strategy Understanding
+            strategy_q = f"""What is your main goal in this game? Answer in one short sentence."""
+            
+            # Execute validation prompts
+            try:
+                print(f"  [{agent.name}] Testing payoff understanding...")
+                payoff_ans = agent.execute_round(payoff_q)[:100]
+                
+                if history_q:
+                    print(f"  [{agent.name}] Testing history recall...")
+                    history_ans = agent.execute_round(history_q)[:100]
+                else:
+                    history_ans = "N/A (Round 1)"
+                
+                print(f"  [{agent.name}] Testing strategy understanding...")
+                strategy_ans = agent.execute_round(strategy_q)[:100]
+                
+                # Log meta-prompt results
+                self.game.history.update_round(self.round_number, agent.name, {
+                    'meta_prompt': {
+                        'payoff_understanding': payoff_ans,
+                        'history_recall': history_ans,
+                        'strategy_understanding': strategy_ans
+                    }
+                })
+                
+                print(f"  [{agent.name}] Meta-prompts completed.")
+                
+            except Exception as e:
+                print(f"  [{agent.name}] Meta-prompt failed: {e}")
+    
     def _execute_communication_phase(self):
         for agent in self.game.agents.values():
             prompt = self.create_prompt(agent, phase='communicate')
@@ -570,18 +638,29 @@ class GameRound:
             punish_prompt = f"""
 The contribution phase for Round {self.round_number} is over.
 Results: {current_outcome_str}.
-You have the option to punish players who acted selfishly (Free-riders).
+You are {agent.name}.
+You have the option to punish players who acted selfishly (Free-riders who chose 'Keep' or 'Defect').
 Cost to you: 1 point. Fine to them: 3 points.
-You can punish multiple people (e.g., 'Bob, Charlie') or 'None'.
-Output ONLY the names or 'None'.
-"""
+You can punish multiple people by listing names (e.g., 'Bob, Charlie') or respond 'None' to punish no one.
+Output ONLY the names or 'None'. Do NOT explain your reasoning.
+
+Your response:"""
             # Execute
-            response = agent.execute_round(punish_prompt)
-            print(f"[{agent.name} - PUNISH PHASE] Response: {response}")
+            response = agent.execute_round(punish_prompt).strip()
             
-            # Parse names
+            # Clean and truncate for display
+            display_response = response[:100] + "..." if len(response) > 100 else response
+            print(f"[{agent.name} - PUNISH PHASE] Response: {display_response}")
+            
+            # IMPROVED PARSING: More strict name detection
+            # Check for explicit "None" response first
+            if "none" in response.lower()[:20]:  # Check only first 20 chars for "None"
+                continue
+                
+            # Parse names more carefully - look for names as separate words
             for opp in opponents:
-                if opp.name in response:
+                # Use word boundary matching to avoid false positives
+                if re.search(rf'\b{re.escape(opp.name)}\b', response, re.IGNORECASE):
                     # Apply Punishment
                     agent.add_score(-1) # Cost
                     opp.add_score(-3)   # Fine
@@ -603,20 +682,62 @@ Output ONLY the names or 'None'.
     
     # ... (rest of class)
 
+    def _ask_reasoning(self, agent, chosen_strategy):
+        """
+        Ask agent to explain their reasoning AFTER they've made their choice.
+        This avoids interfering with the strategy parsing.
+        """
+        opponents = [a for a in self.game.agents.values() if a != agent]
+        opp_names = ", ".join([o.name for o in opponents])
+        
+        reasoning_prompt = f"""You just chose to {chosen_strategy} in round {self.round_number} while playing with {opp_names}.
+In 1-2 short sentences, explain WHY you made this choice. What factors influenced your decision?
+
+Your reasoning:"""
+        
+        try:
+            # Temporarily increase max_new_tokens for reasoning
+            reasoning_response = agent.execute_round(reasoning_prompt)
+            return reasoning_response.strip()[:300]  # Limit to 300 chars
+        except Exception as e:
+            print(f"[{agent.name}] Failed to get reasoning: {e}")
+            return "Failed to extract reasoning"
+    
     def _execute_agent_strategy(self, agent, prompt):
         # We handle retry at the execute_prompt level somewhat
         response = agent.execute_round(prompt)
-        print(f"[{agent.name}] Response: {response}")
-        found_strategy = next(
-            (key for key, val in self.game.payoff_matrix.strategies.items()
-             if val.lower() in response.lower()), None
-        )
+        
+        # Clean and truncate response for display
+        display_response = response[:100] + "..." if len(response) > 100 else response
+        print(f"[{agent.name}] Response: {display_response}")
+        
+        # IMPROVED PARSING: Look for exact strategy words more carefully
+        # Try to extract from common formats like "A: Cooperate" or just "Cooperate"
+        found_strategy = None
+        response_lower = response.lower()
+        
+        # Try different extraction patterns
+        for key, val in self.game.payoff_matrix.strategies.items():
+            strategy_lower = val.lower()
+            
+            # Pattern 1: "A: Strategy" format
+            if f"a: {strategy_lower}" in response_lower or f"a:{strategy_lower}" in response_lower:
+                found_strategy = key
+                break
+            # Pattern 2: Exact word match (with word boundaries)
+            if re.search(rf'\b{re.escape(strategy_lower)}\b', response_lower):
+                found_strategy = key
+                break
+            # Pattern 3: Loose match as fallback
+            if strategy_lower in response_lower:
+                found_strategy = key
+                break
         
         # Determine intended strategy
         if found_strategy:
             intended_strategy_key = found_strategy
         else:
-            print(f"[{agent.name}] No exact strategy match found. Defaulting to first strategy.")
+            print(f"[{agent.name}] No exact strategy match found in response. Defaulting to first strategy.")
             intended_strategy_key = list(self.game.payoff_matrix.strategies.keys())[0]
 
         # Apply Noise (Trembling Hand)
@@ -633,9 +754,17 @@ Output ONLY the names or 'None'.
                     is_noise = True
                     print(f"!!! TREMBLING HAND: {agent.name} intended {intended_strategy_key} but slipped to {final_strategy_key} !!!")
 
+        # Get reasoning AFTER strategy is determined (if reasoning extraction enabled)
+        if self.game.extract_reasoning:
+            chosen_strategy_name = self.game.payoff_matrix.strategies[final_strategy_key]
+            reasoning = self._ask_reasoning(agent, chosen_strategy_name)
+        else:
+            reasoning = "Reasoning extraction disabled"
+
         # Save transient state to agent for logging
         agent.last_intended_strategy = self.game.payoff_matrix.strategies[intended_strategy_key]
         agent.last_is_noise = is_noise
+        agent.last_reasoning = reasoning
         
         agent.add_strategy(self.game.payoff_matrix.strategies[final_strategy_key])
         return final_strategy_key
@@ -646,12 +775,15 @@ Output ONLY the names or 'None'.
                 'strategy': agent.last_strategy(),
                 'score': agent.last_score(),
                 'intended_strategy': getattr(agent, 'last_intended_strategy', None),
-                'is_noise': getattr(agent, 'last_is_noise', False)
+                'is_noise': getattr(agent, 'last_is_noise', False),
+                'reasoning': getattr(agent, 'last_reasoning', 'No reasoning provided')
             })
 
 class FairGame:
     def __init__(self, name, language, agents, n_rounds, n_rounds_known,
-                 payoff_matrix_data, prompt_template, stop_conditions, agents_communicate, noise=0.0, punishment_enabled=False):
+                 payoff_matrix_data, prompt_template, stop_conditions, agents_communicate, 
+                 noise=0.0, punishment_enabled=False, meta_prompt_enabled=False, 
+                 meta_prompt_rounds=None, extract_reasoning=False):
         self.name = name
         self.language = language
         self.agents = agents
@@ -662,6 +794,9 @@ class FairGame:
         self.agents_communicate = agents_communicate
         self.noise = noise  # Noise probability
         self.punishment_enabled = punishment_enabled # Phase 2 Punishment
+        self.meta_prompt_enabled = meta_prompt_enabled  # Meta-prompting for validation
+        self.meta_prompt_rounds = meta_prompt_rounds or [1, 3, 5]  # Default rounds for validation
+        self.extract_reasoning = extract_reasoning  # Ask for reasoning separately
         self.current_round = 1
         self.history = GameHistory()
         self.choices_made = []
@@ -757,7 +892,10 @@ class FairGameFactory:
             config.get('stopGameWhen', []),
             config.get('agentsCommunicate', False),
             noise=config.get('noise', 0.0),
-            punishment_enabled=config.get('punishment_enabled', False)
+            punishment_enabled=config.get('punishment_enabled', False),
+            meta_prompt_enabled=config.get('meta_prompt_enabled', False),
+            meta_prompt_rounds=config.get('meta_prompt_rounds', [1, 3, 5]),
+            extract_reasoning=config.get('extract_reasoning', False)
         )
 
 # --- 4. EXPERIMENT SETUP (TEMPLATES & CONFIGS) ---
@@ -784,8 +922,9 @@ History of previous rounds:
 {history}
 
 Your goal is to maximize your own score over the long run.
-{choose}: [Output ONLY your choice: '{strategy1}' or '{strategy2}'.]
-""",
+{choose}: [Output ONLY your choice - respond with EXACTLY one word: either '{strategy1}' or '{strategy2}'. No explanations or extra text.]
+
+Your choice:""",
     "vn": """
 Bạn là {currentPlayerName}. Bạn đang tham gia một trò chơi cùng với {opponent1} và {opponent2}.
 {intro}: [Tính cách của bạn là: {personality}.]
@@ -807,8 +946,9 @@ Lịch sử các vòng trước:
 {history}
 
 Mục tiêu của bạn là tối đa hóa điểm số của mình trong dài hạn.
-{choose}: [CHỈ xuất ra lựa chọn của bạn: '{strategy1}' hoặc '{strategy2}'.]
-"""
+{choose}: [CHỈ xuất ra CHÍNH XÁC một từ: '{strategy1}' hoặc '{strategy2}'. Không giải thích hay văn bản thêm.]
+
+Câu trả lời của bạn:"""
 }
 
 def get_template_for_game(game_type, lang):
@@ -832,8 +972,9 @@ Kết quả như sau:
 
 Mục tiêu: Tối đa hóa lợi ích cá nhân (giảm thiểu hình phạt).
 Lịch sử: {history}.
-{choose}: [Chọn giữa {strategy1} và {strategy2}. CHỈ ghi lựa chọn.]
-"""
+{choose}: [CHỈ xuất ra CHÍNH XÁC một từ: '{strategy1}' hoặc '{strategy2}'. Không giải thích.]
+
+Câu trả lời của bạn:"""
         else: # Default EN
             return """
 You are {currentPlayerName}. Your opponents are {opponent1} and {opponent2}.
@@ -852,8 +993,9 @@ Outcomes:
 
 Goal: Maximize your personal outcome (minimize penalty).
 History: {history}.
-{choose}: [Choose between {strategy1} and {strategy2}. Output ONLY the choice.]
-"""
+{choose}: [Output ONLY your choice - respond with EXACTLY one word: either '{strategy1}' or '{strategy2}'. No explanations.]
+
+Your response:"""
     # Reuse generic templates for PGG/PD
     return TEMPLATES.get(lang, TEMPLATES['en'])
 
@@ -1010,6 +1152,9 @@ if __name__ == "__main__":
     parser.add_argument("--noise", type=float, default=0.0, help="Trembling Hand Noise Probability (0.0 to 1.0)")
     parser.add_argument("--punishment", action="store_true", help="Enable Punishment Phase (PGG only)")
     parser.add_argument("--no-punishment", dest="punishment", action="store_false", help="Disable Punishment Phase")
+    parser.add_argument("--meta-prompt", action="store_true", help="Enable Meta-Prompting (comprehension validation)")
+    parser.add_argument("--meta-rounds", type=str, default="1,3,5", help="Comma-separated rounds for meta-prompts (e.g., '1,3,5')")
+    parser.add_argument("--reasoning", action="store_true", help="Extract reasoning from agents (separate prompt)")
     parser.set_defaults(punishment=True)
 
     args = parser.parse_args()
@@ -1029,6 +1174,9 @@ if __name__ == "__main__":
     config['nRounds'] = args.rounds
     config['noise'] = args.noise
     config['punishment_enabled'] = args.punishment
+    config['meta_prompt_enabled'] = args.meta_prompt
+    config['meta_prompt_rounds'] = [int(r.strip()) for r in args.meta_rounds.split(',')]
+    config['extract_reasoning'] = args.reasoning
     
     # Multi-Model & Multi-Lang Loop
     models_list = args.models.split(',')
@@ -1038,7 +1186,12 @@ if __name__ == "__main__":
     
     final_results = {}
     
+    interrupted = False
+    
     for model in models_list:
+        if interrupted:
+            break
+            
         model = model.strip()
         config['llm'] = model
         
@@ -1061,8 +1214,15 @@ if __name__ == "__main__":
                 for k, v in results.items():
                     key_name = f"{args.game}_{model}_{lang}_Noise{args.noise}"
                     final_results[key_name] = v
+            except KeyboardInterrupt:
+                print(f"\n\n!!! Experiment interrupted by user (Ctrl+C) !!!")
+                print(f"Saving partial results before exit...")
+                interrupted = True
+                break  # Break inner loop
             except Exception as e:
                 print(f"ERROR executing {model}/{lang}: {e}")
+                import traceback
+                traceback.print_exc()
                 final_results[f"{args.game}_{model}_{lang}_ERROR"] = str(e)
 
     # Save Results
