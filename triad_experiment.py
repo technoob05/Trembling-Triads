@@ -575,7 +575,8 @@ class FairGameFactory:
 
 # --- 4. EXPERIMENT SETUP (TEMPLATES & CONFIGS) ---
 
-DEFAULT_TEMPLATE = """
+TEMPLATES = {
+    "en": """
 You are {currentPlayerName}. You are a participant in a game with {opponent1} and {opponent2}.
 {intro}: [Your personality is: {personality}.]
 {opponentIntro}: [You know that {opponent1} has a {opponentPersonalityProbability1}% chance of being {opponentPersonality1}.]
@@ -597,7 +598,31 @@ History of previous rounds:
 
 Your goal is to maximize your own score over the long run.
 {choose}: [Output ONLY your choice: '{strategy1}' or '{strategy2}'.]
+""",
+    "vn": """
+Bạn là {currentPlayerName}. Bạn đang tham gia một trò chơi cùng với {opponent1} và {opponent2}.
+{intro}: [Tính cách của bạn là: {personality}.]
+{opponentIntro}: [Bạn biết rằng {opponent1} có {opponentPersonalityProbability1}% khả năng là người {opponentPersonality1}.]
+
+Trò chơi diễn ra theo nhiều vòng. Tổng cộng có {nRounds} vòng.
+Vòng hiện tại: {currentRound}.
+
+Bạn phải chọn giữa hai phương án:
+- '{strategy1}' (Hợp tác / Đóng góp)
+- '{strategy2}' (Phản bội / Giữ lại)
+
+Quy tắc trả thưởng:
+- Nếu tất cả cùng chọn '{strategy1}', mỗi người nhận được {weight1}.
+- Nếu bạn chọn '{strategy2}' nhưng những người khác chọn '{strategy1}', bạn nhận {weight2} (Hưởng lợi miễn phí) và họ nhận {weight3} (Người chịu thiệt).
+- Nếu tất cả cùng chọn '{strategy2}', mỗi người nhận được {weight4}.
+
+Lịch sử các vòng trước:
+{history}
+
+Mục tiêu của bạn là tối đa hóa điểm số của mình trong dài hạn.
+{choose}: [CHỈ xuất ra lựa chọn của bạn: '{strategy1}' hoặc '{strategy2}'.]
 """
+}
 
 # 3-Player PGG Config
 PGG3_PAYOFF = {
@@ -610,10 +635,10 @@ PGG3_PAYOFF = {
         "AllDefect": 4
     },
     "strategies": {
-        "en": {"strategy1": "Contribute", "strategy2": "Keep"}
+        "en": {"strategy1": "Contribute", "strategy2": "Keep"},
+        "vn": {"strategy1": "Đóng góp", "strategy2": "Giữ lại"}
     },
     "combinations": {
-        # Combinations for 3 players: [A1, A2, A3]
         "CCC": ["strategy1", "strategy1", "strategy1"],
         "CCD": ["strategy1", "strategy1", "strategy2"],
         "CDC": ["strategy1", "strategy2", "strategy1"],
@@ -624,12 +649,11 @@ PGG3_PAYOFF = {
         "DDD": ["strategy2", "strategy2", "strategy2"]
     },
     "matrix": {
-        # Weights map to agents [A1, A2, A3]
         "CCC": ["GlobalWin", "GlobalWin", "GlobalWin"],
-        "CCD": ["Sucker", "Sucker", "FreeRide"], # 2 contributors, 1 free rider
+        "CCD": ["Sucker", "Sucker", "FreeRide"], 
         "CDC": ["Sucker", "FreeRide", "Sucker"],
         "DCC": ["FreeRide", "Sucker", "Sucker"],
-        "CDD": ["Sucker", "FreeRide", "FreeRide"], # 1 contributor, 2 free riders
+        "CDD": ["Sucker", "FreeRide", "FreeRide"], 
         "DCD": ["FreeRide", "Sucker", "FreeRide"],
         "DDC": ["FreeRide", "FreeRide", "Sucker"],
         "DDD": ["AllDefect", "AllDefect", "AllDefect"]
@@ -642,11 +666,12 @@ PGG_CONFIG = {
     "nRoundsIsKnown": True,
     "llm": "MockModel", 
     "languages": ["en"],
-    "promptTemplate": {"en": DEFAULT_TEMPLATE},
+    "promptTemplate": TEMPLATES,
     "agents": {
         "names": ["Alice", "Bob", "Charlie"],
         "personalities": {
-            "en": ["Cooperative", "Selfish", "Tit-for-Tat"]
+            "en": ["Cooperative", "Selfish", "Tit-for-Tat"],
+            "vn": ["Hợp tác", "Ích kỷ", "Ăn miếng trả miếng"]
         },
         "opponentPersonalityProb": [100, 100, 100]
     },
@@ -656,15 +681,16 @@ PGG_CONFIG = {
 # 3-Player Triadic PD Config
 TRIADIC_PD_PAYOFF = {
     "weights": {
-        "Reward": 7,       # CCC (All Cooperate)
-        "Temptation": 9,   # D vs CC (Defector Temptation)
-        "Sucker": 2,       # C vs CD (Cooperator Sucker)
-        "Punishment": 1,   # DDD (All Defect)
-        "LoneSucker": 0,   # C vs DD (Lone Sucker)
-        "Exploiter": 5     # D vs CD (Exploiter in mixed group)
+        "Reward": 7,       # CCC 
+        "Temptation": 9,   # D vs CC 
+        "Sucker": 2,       # C vs CD 
+        "Punishment": 1,   # DDD 
+        "LoneSucker": 0,   # C vs DD 
+        "Exploiter": 5     # D vs CD 
     },
     "strategies": {
-        "en": {"strategy1": "Cooperate", "strategy2": "Defect"}
+        "en": {"strategy1": "Cooperate", "strategy2": "Defect"},
+        "vn": {"strategy1": "Hợp tác", "strategy2": "Phản bội"}
     },
     "combinations": {
         "CCC": ["strategy1", "strategy1", "strategy1"],
@@ -694,40 +720,60 @@ TRIADIC_PD_CONFIG["payoffMatrix"] = TRIADIC_PD_PAYOFF
 
 if __name__ == "__main__":
     import argparse
+    import itertools
     
     parser = argparse.ArgumentParser(description="Run FAIRGAME Experiments (Kaggle Ready)")
-    parser.add_argument("--model", type=str, default="MockModel", 
-                        choices=["MockModel", "OpenAIGPT4o", "Claude35Haiku", "MistralLarge", "Llama3-8B", "Llama3-70B", "Mistral-7B"],
-                        help="LLM provider model to use. Use 'Llama3-70B' for Kaggle H100.")
+    parser.add_argument("--models", type=str, default="MockModel", 
+                        help="Comma-separated list of LLM models to use (e.g. 'MockModel,Llama3-8B')")
     parser.add_argument("--rounds", type=int, default=5, help="Number of rounds")
     parser.add_argument("--game", type=str, default="PGG", choices=["PGG", "PD"], help="Game to run")
+    parser.add_argument("--languages", type=str, default="en", help="Comma-separated list of languages (e.g. 'en,vn')")
     
     args = parser.parse_args()
     
-    print(f"Initializing FAIRGAME Standalone Experiment: {args.game} with {args.model} for {args.rounds} rounds...")
+    model_list = [m.strip() for m in args.models.split(",")]
+    lang_list = [l.strip() for l in args.languages.split(",")]
     
-    # Auto-detect if on Kaggle and no model specified meant likely wanting local GPU
-    if args.model == "MockModel" and "KAGGLE_KERNEL_RUN_TYPE" in os.environ:
-        print("Detected Kaggle environment. Tip: Use --model Llama3-70B to leverage H100 GPU.")
-
+    print(f"Initializing FAIRGAME Benchmark: {args.game}")
+    print(f"Models: {model_list}")
+    print(f"Languages: {lang_list}")
+    print(f"Rounds: {args.rounds}")
+    
     factory = FairGameFactory()
     
-    if args.game == "PD":
-        config = TRIADIC_PD_CONFIG
-    else:
-        config = PGG_CONFIG
+    base_config = TRIADIC_PD_CONFIG if args.game == "PD" else PGG_CONFIG
+    
+    # Update global round setting
+    base_config['nRounds'] = args.rounds
+    base_config['promptTemplate'] = TEMPLATES
+    
+    all_results = {}
+    
+    # Benchmarking Loop: Iterate over Models x Languages
+    for model, lang in itertools.product(model_list, lang_list):
+        print(f"\n>>> RUNNING CONFIG: Model={model}, Language={lang}")
+        
+        # Prepare specific config for this run
+        current_config = base_config.copy()
+        current_config['llm'] = model
+        current_config['languages'] = [lang]
+        
+        # Run
+        try:
+            run_results = factory.create_and_run_games(current_config)
+            
+            # Key for result storage
+            result_key = f"{args.game}_{model}_{lang}"
+            all_results[result_key] = run_results
+            
+        except Exception as e:
+            print(f"FAILED CONFIG {model}-{lang}: {e}")
+            all_results[f"{args.game}_{model}_{lang}_ERROR"] = str(e)
 
-    # Update Config with CLI args
-    config['llm'] = args.model
-    config['nRounds'] = args.rounds
-    
-    results = factory.create_and_run_games(config)
-    
-    print("\n--- RESULTS ---")
-    print(json.dumps(results, indent=2))
+    print("\n--- BENCHMARK COMPLETED ---")
     
     # Save to file
-    filename = f"experiment_results_{args.game}_{args.model}_{args.rounds}.json"
-    with open(filename, "w") as f:
-        json.dump(results, f, indent=2)
+    filename = f"benchmark_{args.game}_rounds{args.rounds}_{int(time.time())}.json"
+    with open(filename, "w", encoding='utf-8') as f:
+        json.dump(all_results, f, indent=2, ensure_ascii=False)
     print(f"Results saved to {filename}")
