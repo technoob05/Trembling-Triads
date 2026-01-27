@@ -180,7 +180,8 @@ class LocalHFConnector(AbstractConnector):
                     max_new_tokens=10,  # Reduced from 50 to force shorter responses
                     do_sample=False,     # Deterministic for game responses
                     temperature=0.1,     # Lower temperature for more focused responses
-                    top_p=0.9
+                    top_p=0.9,
+                    # Remove max_length to avoid conflict warning
                 )
                 LocalHFConnector._model_name = self.provider_model
                 print("Model loaded successfully via Unsloth.")
@@ -254,8 +255,8 @@ class LocalHFConnector(AbstractConnector):
                 prompt,
                 eos_token_id=LocalHFConnector._pipeline.tokenizer.eos_token_id,
                 pad_token_id=LocalHFConnector._pipeline.tokenizer.eos_token_id,
-                truncation=True,
-                max_length=1024  # Prevent excessive memory usage
+                truncation=True
+                # max_length removed to avoid conflict with max_new_tokens
             )
             full_output = sequences[0]['generated_text']
             # Strip prompt
@@ -1095,6 +1096,7 @@ TRIADIC_PD_PAYOFF = {
 TRIADIC_PD_CONFIG = PGG_CONFIG.copy()
 TRIADIC_PD_CONFIG["name"] = "Triadic Prisoner's Dilemma"
 TRIADIC_PD_CONFIG["payoffMatrix"] = TRIADIC_PD_PAYOFF
+TRIADIC_PD_CONFIG["punishment_enabled"] = False  # PD has no punishment phase
 
 # 3-Player Volunteer's Dilemma Config (Updated per Research Proposal)
 VD_PAYOFF = {
@@ -1135,6 +1137,7 @@ VD_PAYOFF = {
 VD_CONFIG = PGG_CONFIG.copy()
 VD_CONFIG["name"] = "Volunteer's Dilemma (3-Player)"
 VD_CONFIG["payoffMatrix"] = VD_PAYOFF
+VD_CONFIG["punishment_enabled"] = False  # VD has no punishment phase
 
 
 if __name__ == "__main__":
@@ -1168,6 +1171,7 @@ if __name__ == "__main__":
         VD_PAYOFF_CONFIG = PGG_CONFIG.copy() # Quick hack to clone structure
         VD_PAYOFF_CONFIG["name"] = "Volunteer's Dilemma"
         VD_PAYOFF_CONFIG["payoffMatrix"] = VD_PAYOFF # Use the VD Payoff defined earlier
+        VD_PAYOFF_CONFIG["punishment_enabled"] = False  # VD has no punishment
         config = VD_PAYOFF_CONFIG
     
     # Overrides
