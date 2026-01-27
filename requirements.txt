@@ -7,4 +7,5 @@ torch
 transformers
 accelerate
 bitsandbytes
-kaggle-secrets
+unsloth
+unsloth_zoo

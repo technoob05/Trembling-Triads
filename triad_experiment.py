@@ -137,6 +137,39 @@ class LocalHFConnector(AbstractConnector):
             else:
                 print(f"[WARNING] Model path NOT FOUND on disk: {self.provider_model}. Attempting to download from HF Hub...")
 
+            # 1. Try Loading with Unsloth (Preferred for GPT-OSS / Llama / Qwen)
+            try:
+                from unsloth import FastLanguageModel
+                print(f"[INFO] Unsloth detected. Attempting to load {self.provider_model} via FastLanguageModel...")
+                
+                model, tokenizer = FastLanguageModel.from_pretrained(
+                    model_name = self.provider_model,
+                    max_seq_length = 2048, # Reasonable default
+                    dtype = None, # Auto
+                    load_in_4bit = True,
+                    trust_remote_code = True,
+                )
+                
+                # Unsloth optimization for inference
+                FastLanguageModel.for_inference(model)
+                
+                LocalHFConnector._pipeline = pipeline(
+                    "text-generation",
+                    model=model,
+                    tokenizer=tokenizer,
+                    max_new_tokens=50,
+                    do_sample=True,
+                    temperature=0.7,
+                    top_p=0.9
+                )
+                LocalHFConnector._model_name = self.provider_model
+                print("Model loaded successfully via Unsloth.")
+                return 
+
+            except Exception as e:
+                print(f"[INFO] Unsloth load failed or not installed ({e}). Falling back to Transformers...")
+
+            # 2. Fallback: Standard Transformers Loading
             # Handle 4-bit loading
             bnb_config = BitsAndBytesConfig(
                 load_in_4bit=True,
@@ -146,33 +179,25 @@ class LocalHFConnector(AbstractConnector):
             )
 
             try:
-                tokenizer = AutoTokenizer.from_pretrained(self.provider_model, trust_remote_code=True)
-            except Exception as e:
-                print(f"[WARNING] Tokenizer load failed (maybe not in this dir?): {e}. Trying generic Qwen/Llama tokenizer...")
-                # Fallback if tokenizer files are missing (common in some raw weight dumps)
-                if "qwen" in self.provider_model.lower():
-                     tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-72B-Instruct", trust_remote_code=True)
-                elif "llama" in self.provider_model.lower() or "gpt-oss" in self.provider_model.lower():
-                     tokenizer = AutoTokenizer.from_pretrained("meta-llama/Meta-Llama-3-70B-Instruct", trust_remote_code=True)
-                else:
-                    raise e
-
-            try:
                 print(f"[INFO] Attempting to load with BitsAndBytes (4-bit)...")
+                tokenizer = AutoTokenizer.from_pretrained(self.provider_model, trust_remote_code=True)
                 model = AutoModelForCausalLM.from_pretrained(
                     self.provider_model,
                     quantization_config=bnb_config,
                     device_map="auto",
                     trust_remote_code=True,
-                    # If path exists, force local only to sure we don't accidentally hit the Hub
                     local_files_only=os.path.exists(self.provider_model) 
                 )
             except Exception as e:
+                 # ... existing fallback logic ...
                 if "quantized" in str(e) or "Config" in str(e):
-                    print(f"[INFO] Model appears already quantized or config mismatch ({e}). Reloading WITHOUT BitsAndBytes...")
+                    print(f"[INFO] Model appears already quantized ({e}). Retrying without manual quantization...")
+                    if 'tokenizer' not in locals():
+                         # Try to recover tokenizer if it failed earlier
+                         tokenizer = AutoTokenizer.from_pretrained("meta-llama/Meta-Llama-3-70B-Instruct", trust_remote_code=True) 
+
                     model = AutoModelForCausalLM.from_pretrained(
                         self.provider_model,
-                        # quantization_config=bnb_config, # REMOVED for pre-quantized models
                         device_map="auto",
                         trust_remote_code=True,
                         local_files_only=os.path.exists(self.provider_model) 
