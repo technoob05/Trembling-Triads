@@ -163,7 +163,7 @@ class LocalHFConnector(AbstractConnector):
                 
                 model, tokenizer = FastLanguageModel.from_pretrained(
                     model_name = self.provider_model,
-                    max_seq_length = 1024, # Optimized for memory (was 2048)
+                    max_seq_length = 2048, # Increased for history context (was 1024)
                     dtype = None, # Auto
                     load_in_4bit = True,
                     trust_remote_code = True,
@@ -460,10 +460,13 @@ class PromptCreator:
         strategies_keys = list(self.payoff_matrix.strategies.keys())
         weight_keys = list(self.payoff_matrix.weights.keys())
         
+        # Format history as concise string instead of full dict
+        history_str = self._format_history_concise(history, agent_name, [o.name for o in opponents])
+        
         values = {
             'currentPlayerName': agent_name,
             'currentRound': current_round,
-            'history': history,
+            'history': history_str,
         }
         for i, key in enumerate(strategies_keys):
             values[f"strategy{i+1}"] = self.payoff_matrix.strategies[key]
@@ -475,6 +478,31 @@ class PromptCreator:
         # Add basic nRounds if strictly needed by simple templates
         values['nRounds'] = self.n_rounds
         return values
+    
+    def _format_history_concise(self, history, agent_name, opponent_names):
+        """Format history as concise string to save tokens"""
+        if not history:
+            return "None (first round)"
+        
+        lines = []
+        sorted_rounds = sorted(history.keys(), key=lambda k: int(k.split('_')[1]))
+        
+        for round_key in sorted_rounds:
+            round_num = round_key.split('_')[1]
+            round_data = history[round_key]
+            
+            # Extract strategies for this round
+            strategies = {}
+            for name in [agent_name] + opponent_names:
+                if name in round_data:
+                    strategies[name] = round_data[name].get('strategy', '?')
+            
+            # Format: "R1: You=C, Alice=C, Bob=D"
+            you_strat = strategies.get(agent_name, '?')[0]  # First char only
+            opp_strats = ", ".join([f"{n}={strategies.get(n, '?')[0]}" for n in opponent_names])
+            lines.append(f"R{round_num}: You={you_strat}, {opp_strats}")
+        
+        return "\n".join(lines)
 
     def process_optional_parts(self, agent, opponents, pv_dict):
         # Intro
@@ -679,7 +707,15 @@ Your response:"""
             self.game.n_rounds, self.game.n_rounds_known,
             self.game.payoff_matrix
         )
-        return creator.fill_template(agent, opponents, self.round_number, self.game.history.rounds, phase)
+        
+        # LIMIT HISTORY CONTEXT to prevent token overflow
+        # Only keep last N rounds (default 10) to stay within model's context window
+        history_limit = 10
+        all_rounds = sorted(self.game.history.rounds.keys(), key=lambda k: int(k.split('_')[1]))
+        recent_rounds = all_rounds[-history_limit:] if len(all_rounds) > history_limit else all_rounds
+        limited_history = {k: self.game.history.rounds[k] for k in recent_rounds}
+        
+        return creator.fill_template(agent, opponents, self.round_number, limited_history, phase)
     
     # ... (rest of class)
 
@@ -903,51 +939,37 @@ class FairGameFactory:
 
 TEMPLATES = {
     "en": """
-You are {currentPlayerName}. You are a participant in a game with {opponent1} and {opponent2}.
-{intro}: [Your personality is: {personality}.]
-{opponentIntro}: [You know that {opponent1} has a {opponentPersonalityProbability1}% chance of being {opponentPersonality1}.]
+You are {currentPlayerName}. Playing with {opponent1} and {opponent2}.
+{intro}: [Personality: {personality}]
+Round {currentRound}/{nRounds}.
 
-The game proceeds in rounds. There are {nRounds} rounds in total.
-Current Round: {currentRound}.
+PAYOFFS:
+All {strategy1} → {weight1} each
+You {strategy2}, others {strategy1} → You: {weight2}, Them: {weight3}
+All {strategy2} → {weight4} each
 
-You must choose between two options:
-- '{strategy1}' (Cooperate / Contribute)
-- '{strategy2}' (Defect / Keep)
-
-Payoff Rules:
-- If everyone chooses '{strategy1}', everyone gets {weight1}.
-- If you choose '{strategy2}' but others choose '{strategy1}', you get {weight2} (Free rider) and they get {weight3} (Sucker).
-- If everyone chooses '{strategy2}', everyone gets {weight4}.
-
-History of previous rounds: 
+RECENT HISTORY:
 {history}
 
-Your goal is to maximize your own score over the long run.
-{choose}: [Output ONLY your choice - respond with EXACTLY one word: either '{strategy1}' or '{strategy2}'. No explanations or extra text.]
+Goal: Maximize your score.
+{choose}: [Output EXACTLY one word: "{strategy1}" or "{strategy2}". No explanations.]
 
-Your choice:""",
+Your response:""",
     "vn": """
-Bạn là {currentPlayerName}. Bạn đang tham gia một trò chơi cùng với {opponent1} và {opponent2}.
-{intro}: [Tính cách của bạn là: {personality}.]
-{opponentIntro}: [Bạn biết rằng {opponent1} có {opponentPersonalityProbability1}% khả năng là người {opponentPersonality1}.]
+Bạn là {currentPlayerName}. Chơi với {opponent1} và {opponent2}.
+{intro}: [Tính cách: {personality}]
+Vòng {currentRound}/{nRounds}.
 
-Trò chơi diễn ra theo nhiều vòng. Tổng cộng có {nRounds} vòng.
-Vòng hiện tại: {currentRound}.
+ĐIỂM SỐ:
+Tất cả {strategy1} → {weight1} điểm mỗi người
+Bạn {strategy2}, người khác {strategy1} → Bạn: {weight2}, Họ: {weight3}
+Tất cả {strategy2} → {weight4} điểm mỗi người
 
-Bạn phải chọn giữa hai phương án:
-- '{strategy1}' (Hợp tác / Đóng góp)
-- '{strategy2}' (Phản bội / Giữ lại)
-
-Quy tắc trả thưởng:
-- Nếu tất cả cùng chọn '{strategy1}', mỗi người nhận được {weight1}.
-- Nếu bạn chọn '{strategy2}' nhưng những người khác chọn '{strategy1}', bạn nhận {weight2} (Hưởng lợi miễn phí) và họ nhận {weight3} (Người chịu thiệt).
-- Nếu tất cả cùng chọn '{strategy2}', mỗi người nhận được {weight4}.
-
-Lịch sử các vòng trước:
+LỊCH SỬ GẦN ĐÂY:
 {history}
 
-Mục tiêu của bạn là tối đa hóa điểm số của mình trong dài hạn.
-{choose}: [CHỈ xuất ra CHÍNH XÁC một từ: '{strategy1}' hoặc '{strategy2}'. Không giải thích hay văn bản thêm.]
+Mục tiêu: Tối đa hóa điểm.
+{choose}: [CHỈ xuất CHÍNH XÁC một từ: "{strategy1}" hoặc "{strategy2}". Không giải thích.]
 
 Câu trả lời của bạn:"""
 }
@@ -1201,12 +1223,15 @@ if __name__ == "__main__":
         
         for lang in languages_list:
             lang = lang.strip()
-            print(f"\n>>> RUNNING EXPERIMENT: Game={args.game}, Model={model}, Lang={lang}, Noise={args.noise}, Punish={args.punishment} <<<")
             
             # Temporary single-lang config for the factory
             run_config = config.copy()
             run_config['languages'] = [lang]
             run_config['promptTemplate'] = {lang: get_template_for_game(args.game, lang)} # Dynamic Template
+            
+            # Print actual punishment status from config, not args
+            actual_punishment = run_config.get('punishment_enabled', False)
+            print(f"\n>>> RUNNING EXPERIMENT: Game={args.game}, Model={model}, Lang={lang}, Noise={args.noise}, Punish={actual_punishment} <<<")
             
             # Adjust personalities map key to match single lang list
             # The factory expects config['agents']['personalities'][lang] to exist
