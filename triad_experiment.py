@@ -417,14 +417,24 @@ class GameRound:
         self.round_number = game.current_round
 
     def run(self):
+        # Phase 1: Communication (Optional)
         if self.game.agents_communicate:
             self._execute_communication_phase()
 
+        # Phase 2: Action / Contribution
         round_strategies = []
         for agent in self.game.agents.values():
             prompt = self.create_prompt(agent, phase='choose')
             strategy = self._execute_agent_strategy(agent, prompt)
             round_strategies.append(strategy)
+        
+        # Calculate Phase 1 Scores
+        self.game.payoff_matrix.attribute_scores(list(self.game.agents.values()), round_strategies)
+        
+        # Phase 3: Punishment (Conditional for PGG)
+        if self.game.punishment_enabled:
+            self._execute_punishment_phase(round_strategies)
+
         return round_strategies
 
     def _execute_communication_phase(self):
@@ -435,6 +445,55 @@ class GameRound:
                 'message_prompt': prompt, 'message': message
             })
 
+    def _execute_punishment_phase(self, round_strategies):
+        # 1. Reveal who did what
+        # In a real rigorous setting, we'd form a specific prompt. 
+        # For this prototype, we'll append the result to the history string dynamically or just ask directly.
+        
+        agents_list = list(self.game.agents.values())
+        
+        # Punishment map: who punishes whom
+        # punishment_cost = 1, punishment_fine = 3
+        
+        for agent in agents_list:
+            # Simple prompt construction for punishment
+            # We assume the agent knows what happened based on the "History" (which usually updates after the round).
+            # But here we are IN the round. We need to tell them the immediate outcome.
+            
+            # Identify Free Riders (Strategy 2)
+            # This logic is PGG specific
+            opponents = [a for a in agents_list if a != agent]
+            
+            # Construct a mini-prompt
+            # "The round results are: [A: Contribute, B: Keep, C: Keep]. You are A. Do you want to pay 1 point to deduct 3 points from any free-rider? Output the name of the agent to punish, or 'None'."
+            
+            current_outcome_str = ", ".join([f"{a.name}: {a.last_strategy()}" for a in agents_list])
+            
+            punish_prompt = f"""
+The contribution phase for Round {self.round_number} is over.
+Results: {current_outcome_str}.
+You have the option to punish players who acted selfishly (Free-riders).
+Cost to you: 1 point. Fine to them: 3 points.
+You can punish multiple people (e.g., 'Bob, Charlie') or 'None'.
+Output ONLY the names or 'None'.
+"""
+            # Execute
+            response = agent.execute_round(punish_prompt)
+            print(f"[{agent.name} - PUNISH PHASE] Response: {response}")
+            
+            # Parse names
+            for opp in opponents:
+                if opp.name in response:
+                    # Apply Punishment
+                    agent.add_score(-1) # Cost
+                    opp.add_score(-3)   # Fine
+                    print(f"!!! PUNISHMENT: {agent.name} punished {opp.name} !!!")
+                    
+                    # Log event
+                    self.game.history.update_round(self.round_number, agent.name, {'punished': opp.name})
+                    self.game.history.update_round(self.round_number, opp.name, {'was_punished_by': agent.name})
+
+
     def create_prompt(self, agent, phase):
         opponents = [a for a in self.game.agents.values() if a != agent]
         creator = PromptCreator(
@@ -443,6 +502,8 @@ class GameRound:
             self.game.payoff_matrix
         )
         return creator.fill_template(agent, opponents, self.round_number, self.game.history.rounds, phase)
+    
+    # ... (rest of class)
 
     def _execute_agent_strategy(self, agent, prompt):
         # We handle retry at the execute_prompt level somewhat
@@ -492,7 +553,7 @@ class GameRound:
 
 class FairGame:
     def __init__(self, name, language, agents, n_rounds, n_rounds_known,
-                 payoff_matrix_data, prompt_template, stop_conditions, agents_communicate, noise=0.0):
+                 payoff_matrix_data, prompt_template, stop_conditions, agents_communicate, noise=0.0, punishment_enabled=False):
         self.name = name
         self.language = language
         self.agents = agents
@@ -502,6 +563,7 @@ class FairGame:
         self.stop_conditions = stop_conditions
         self.agents_communicate = agents_communicate
         self.noise = noise  # Noise probability
+        self.punishment_enabled = punishment_enabled # Phase 2 Punishment
         self.current_round = 1
         self.history = GameHistory()
         self.choices_made = []
@@ -511,7 +573,12 @@ class FairGame:
         runner = GameRound(self)
         round_strategies = runner.run()
         self.choices_made.append(round_strategies)
-        self.payoff_matrix.attribute_scores(list(self.agents.values()), round_strategies)
+        # Scores are attributed inside runner.run now if punishment is on? 
+        # Wait, typical flow is attribute -> update history.
+        # But for Punishment, we need attribution FIRST (phase 1), then Punishment (phase 2 - modification), then History.
+        # So in run(), we moved attribution logic.
+        # Let's clean this up. runner.run() does it all.
+        
         runner._update_round_history()
 
     def stop_condition_is_met(self):
@@ -591,7 +658,8 @@ class FairGameFactory:
             config['promptTemplate'][row['Language']],
             config.get('stopGameWhen', []),
             config.get('agentsCommunicate', False),
-            noise=config.get('noise', 0.0)
+            noise=config.get('noise', 0.0),
+            punishment_enabled=config.get('punishment_enabled', False)
         )
 
 # --- 4. EXPERIMENT SETUP (TEMPLATES & CONFIGS) ---
@@ -744,18 +812,19 @@ PGG_CONFIG = {
         },
         "opponentPersonalityProb": [100, 100, 100]
     },
-    "payoffMatrix": PGG3_PAYOFF
+    "payoffMatrix": PGG3_PAYOFF,
+    "punishment_enabled": True # Default to True for "PGG with Punishment"
 }
 
-# 3-Player Triadic PD Config
+# 3-Player Triadic PD Config (Updated per Research Proposal)
 TRIADIC_PD_PAYOFF = {
     "weights": {
-        "Reward": 7,       # CCC 
-        "Temptation": 9,   # D vs CC 
-        "Sucker": 2,       # C vs CD 
-        "Punishment": 1,   # DDD 
-        "LoneSucker": 0,   # C vs DD 
-        "Exploiter": 5     # D vs CD 
+        "Reward": 7,       # CCC (All Cooperate)
+        "Temptation": 9,   # D vs CC (Defector gets 9)
+        "Sucker": 0,       # C vs DD (Lone Cooperator gets 0) - Matches Proposal "2 victims get 0"
+        "Punishment": 1,   # DDD (All Defect)
+        "LoneSucker": 0,   # C vs DD (Same as Sucker in this symmetric setup, usually)
+        "Exploiter": 5     # D vs CD (Two Defectors get 5)
     },
     "strategies": {
         "en": {"strategy1": "Cooperate", "strategy2": "Defect"},
@@ -776,9 +845,9 @@ TRIADIC_PD_PAYOFF = {
         "CCD": ["Sucker", "Sucker", "Temptation"],
         "CDC": ["Sucker", "Temptation", "Sucker"],
         "DCC": ["Temptation", "Sucker", "Sucker"],
-        "CDD": ["LoneSucker", "Exploiter", "Exploiter"],
-        "DCD": ["Exploiter", "LoneSucker", "Exploiter"],
-        "DDC": ["Exploiter", "Exploiter", "LoneSucker"],
+        "CDD": ["Sucker", "Exploiter", "Exploiter"], # C gets 0, D's get 5
+        "DCD": ["Exploiter", "Sucker", "Exploiter"],
+        "DDC": ["Exploiter", "Exploiter", "Sucker"],
         "DDD": ["Punishment", "Punishment", "Punishment"]
     }
 }
@@ -787,12 +856,12 @@ TRIADIC_PD_CONFIG = PGG_CONFIG.copy()
 TRIADIC_PD_CONFIG["name"] = "Triadic Prisoner's Dilemma"
 TRIADIC_PD_CONFIG["payoffMatrix"] = TRIADIC_PD_PAYOFF
 
-# 3-Player Volunteer's Dilemma Config
+# 3-Player Volunteer's Dilemma Config (Updated per Research Proposal)
 VD_PAYOFF = {
     "weights": {
-        "VolunteerCost": -1,   
-        "FreeRide": 0,
-        "Disaster": -5
+        "VolunteerNet": 80,   # 100 Benefit - 20 Cost
+        "FreeRide": 100,      # 100 Benefit - 0 Cost
+        "Disaster": -100      # Everyone dies
     },
     "strategies": {
         "en": {"strategy1": "Volunteer", "strategy2": "Ignore"},
@@ -809,16 +878,16 @@ VD_PAYOFF = {
         "DDD": ["strategy2", "strategy2", "strategy2"]
     },
     "matrix": {
-        # Anyone who plays S1 (Volunteer) gets VolunteerCost
+        # Anyone who plays S1 (Volunteer) gets VolunteerNet
         # If no one plays S1, everyone gets Disaster
         # If someone volunteers, those who play S2 (Ignore) get FreeRide
-        "CCC": ["VolunteerCost", "VolunteerCost", "VolunteerCost"],
-        "CCD": ["VolunteerCost", "VolunteerCost", "FreeRide"],
-        "CDC": ["VolunteerCost", "FreeRide", "VolunteerCost"],
-        "DCC": ["FreeRide", "VolunteerCost", "VolunteerCost"],
-        "CDD": ["VolunteerCost", "FreeRide", "FreeRide"],
-        "DCD": ["FreeRide", "VolunteerCost", "FreeRide"],
-        "DDC": ["FreeRide", "FreeRide", "VolunteerCost"],
+        "CCC": ["VolunteerNet", "VolunteerNet", "VolunteerNet"], # All pay cost? Proposal says "All suffer cost", so 80.
+        "CCD": ["VolunteerNet", "VolunteerNet", "FreeRide"],
+        "CDC": ["VolunteerNet", "FreeRide", "VolunteerNet"],
+        "DCC": ["FreeRide", "VolunteerNet", "VolunteerNet"],
+        "CDD": ["VolunteerNet", "FreeRide", "FreeRide"],
+        "DCD": ["FreeRide", "VolunteerNet", "FreeRide"],
+        "DDC": ["FreeRide", "FreeRide", "VolunteerNet"],
         "DDD": ["Disaster", "Disaster", "Disaster"]
     }
 }
@@ -831,69 +900,77 @@ VD_CONFIG["payoffMatrix"] = VD_PAYOFF
 if __name__ == "__main__":
     import argparse
     import itertools
-    
-    parser = argparse.ArgumentParser(description="Run FAIRGAME Experiments (Kaggle Ready)")
-    parser.add_argument("--models", type=str, default="MockModel", 
-                        help="Comma-separated list of LLM models to use (e.g. 'MockModel,Llama3-8B')")
+    import time # Added import for time
+    import json # Added import for json
+    from fairgame import FairGameFactory, Agent, FairGame # Added imports for classes
+
+    parser = argparse.ArgumentParser(description="Run Triad Experiments")
+    parser.add_argument("--game", type=str, default="PGG", choices=["PGG", "PD", "VD"], help="Game to play")
+    parser.add_argument("--models", type=str, default="MockModel", help="Comma-separated model names")
     parser.add_argument("--rounds", type=int, default=5, help="Number of rounds")
-    parser.add_argument("--game", type=str, default="PGG", choices=["PGG", "PD", "VD"], help="Game to run")
-    parser.add_argument("--languages", type=str, default="en", help="Comma-separated list of languages (e.g. 'en,vn')")
-    parser.add_argument("--noise", type=float, default=0.0, help="Probability of 'trembling hand' error (0.0 to 1.0)")
+    parser.add_argument("--languages", type=str, default="en", help="Comma-separated languages (en, vn)")
+    parser.add_argument("--noise", type=float, default=0.0, help="Trembling Hand Noise Probability (0.0 to 1.0)")
+    parser.add_argument("--punishment", action="store_true", help="Enable Punishment Phase (PGG only)")
+    parser.add_argument("--no-punishment", dest="punishment", action="store_false", help="Disable Punishment Phase")
+    parser.set_defaults(punishment=True)
 
     args = parser.parse_args()
-    
-    model_list = [m.strip() for m in args.models.split(",")]
-    lang_list = [l.strip() for l in args.languages.split(",")]
-    
-    print(f"Initializing FAIRGAME Benchmark: {args.game}")
-    print(f"Models: {model_list}")
-    print(f"Languages: {lang_list}")
-    print(f"Rounds: {args.rounds}")
-    print(f"Noise Level: {args.noise}")
 
+    # Select Base Config
+    if args.game == "PGG":
+        config = PGG_CONFIG
+    elif args.game == "PD":
+        config = TRIADIC_PD_CONFIG
+    elif args.game == "VD":
+        VD_PAYOFF_CONFIG = PGG_CONFIG.copy() # Quick hack to clone structure
+        VD_PAYOFF_CONFIG["name"] = "Volunteer's Dilemma"
+        VD_PAYOFF_CONFIG["payoffMatrix"] = VD_PAYOFF # Use the VD Payoff defined earlier
+        config = VD_PAYOFF_CONFIG
+    
+    # Overrides
+    config['nRounds'] = args.rounds
+    config['noise'] = args.noise
+    config['punishment_enabled'] = args.punishment
+    
+    # Multi-Model & Multi-Lang Loop
+    models_list = args.models.split(',')
+    languages_list = args.languages.split(',')
+    
     factory = FairGameFactory()
     
-    if args.game == "PD":
-        base_config = TRIADIC_PD_CONFIG 
-    elif args.game == "VD":
-        base_config = VD_CONFIG
-    else:
-        base_config = PGG_CONFIG
+    final_results = {}
     
-    # Update global round setting
-    base_config['nRounds'] = args.rounds
-    base_config['noise'] = args.noise
-    
-    all_results = {}
-    
-    # Benchmarking Loop: Iterate over Models x Languages
-    for model, lang in itertools.product(model_list, lang_list):
-        print(f"\n>>> RUNNING CONFIG: Model={model}, Language={lang}")
+    for model in models_list:
+        model = model.strip()
+        config['llm'] = model
         
-        # Prepare specific config for this run
-        current_config = base_config.copy()
-        current_config['llm'] = model
-        current_config['languages'] = [lang]
-        
-        # Select appropriate prompt template (simple dictionary injection for now)
-        current_config['promptTemplate'] = {lang: get_template_for_game(args.game, lang)}
-
-        # Run
-        try:
-            run_results = factory.create_and_run_games(current_config)
+        for lang in languages_list:
+            lang = lang.strip()
+            print(f"\n>>> RUNNING EXPERIMENT: Game={args.game}, Model={model}, Lang={lang}, Noise={args.noise}, Punish={args.punishment} <<<")
             
-            # Key for result storage
-            result_key = f"{args.game}_{model}_{lang}"
-            all_results[result_key] = run_results
+            # Temporary single-lang config for the factory
+            run_config = config.copy()
+            run_config['languages'] = [lang]
+            run_config['promptTemplate'] = {lang: get_template_for_game(args.game, lang)} # Dynamic Template
             
-        except Exception as e:
-            print(f"FAILED CONFIG {model}-{lang}: {e}")
-            all_results[f"{args.game}_{model}_{lang}_ERROR"] = str(e)
+            # Adjust personalities map key to match single lang list
+            # The factory expects config['agents']['personalities'][lang] to exist
+            
+            try:
+                results = factory.create_and_run_games(run_config)
+                
+                # Tag results with metadata key
+                for k, v in results.items():
+                    key_name = f"{args.game}_{model}_{lang}_Noise{args.noise}"
+                    final_results[key_name] = v
+            except Exception as e:
+                print(f"ERROR executing {model}/{lang}: {e}")
+                final_results[f"{args.game}_{model}_{lang}_ERROR"] = str(e)
 
-    print("\n--- BENCHMARK COMPLETED ---")
+    # Save Results
+    timestamp = int(time.time())
+    filename = f"experiment_results_{args.game}_{timestamp}.json"
+    with open(filename, 'w', encoding='utf-8') as f:
+        json.dump(final_results, f, indent=2, ensure_ascii=False)
     
-    # Save to file
-    filename = f"benchmark_{args.game}_rounds{args.rounds}_noise{args.noise}_{int(time.time())}.json"
-    with open(filename, "w", encoding='utf-8') as f:
-        json.dump(all_results, f, indent=2, ensure_ascii=False)
-    print(f"Results saved to {filename}")
+    print(f"\nExperiment Complete. Results saved to {filename}")
