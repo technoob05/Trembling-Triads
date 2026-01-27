@@ -856,7 +856,8 @@ class FairGame:
     def __init__(self, name, language, agents, n_rounds, n_rounds_known,
                  payoff_matrix_data, prompt_template, stop_conditions, agents_communicate, 
                  noise=0.0, punishment_enabled=False, meta_prompt_enabled=False, 
-                 meta_prompt_rounds=None, extract_reasoning=False):
+                 meta_prompt_rounds=None, extract_reasoning=False, save_incremental=False, 
+                 output_file=None):
         self.name = name
         self.language = language
         self.agents = agents
@@ -870,6 +871,8 @@ class FairGame:
         self.meta_prompt_enabled = meta_prompt_enabled  # Meta-prompting for validation
         self.meta_prompt_rounds = meta_prompt_rounds or [1, 3, 5]  # Default rounds for validation
         self.extract_reasoning = extract_reasoning  # Ask for reasoning separately
+        self.save_incremental = save_incremental  # Save JSON after each round
+        self.output_file = output_file  # File to save incremental results
         self.current_round = 1
         self.history = GameHistory()
         self.choices_made = []
@@ -886,7 +889,28 @@ class FairGame:
         # Let's clean this up. runner.run() does it all.
         
         runner._update_round_history()
+        
+        # INCREMENTAL SAVE: Save JSON after each round if enabled
+        if self.save_incremental and self.output_file:
+            self._save_checkpoint()
 
+    def _save_checkpoint(self):
+        """Save current progress to JSON file (incremental save)"""
+        try:
+            checkpoint_data = {
+                "description": self.name,
+                "current_round": self.current_round,
+                "total_rounds": self.n_rounds,
+                "history": self.history.describe()
+            }
+            
+            with open(self.output_file, 'w', encoding='utf-8') as f:
+                json.dump(checkpoint_data, f, indent=2, ensure_ascii=False)
+            
+            print(f"  [Checkpoint] Saved to {self.output_file} (Round {self.current_round})")
+        except Exception as e:
+            print(f"  [Warning] Failed to save checkpoint: {e}")
+    
     def stop_condition_is_met(self):
         if self.choices_made:
             last = self.choices_made[-1]
@@ -900,13 +924,19 @@ class FairGame:
             print(f"--- Round {self.current_round} ---")
             self.run_round()
             self.current_round += 1
+        
+        # Final save if incremental
+        if self.save_incremental and self.output_file:
+            self._save_checkpoint()
+            print(f"\n[OK] Final results saved to {self.output_file}")
+        
         return self.history
 
 class FairGameFactory:
     """Simplified Factory that takes Dict config instead of reading files."""
     
-    def create_and_run_games(self, config: Dict[str, Any]):
-        games = self.create_games(config)
+    def create_and_run_games(self, config: Dict[str, Any], output_file: str = None):
+        games = self.create_games(config, output_file=output_file)
         results = {}
         for i, game in enumerate(games):
             print(f"STARTING GAME {i+1}/{len(games)}")
@@ -917,7 +947,7 @@ class FairGameFactory:
             }
         return results
 
-    def create_games(self, config):
+    def create_games(self, config, output_file: str = None):
         # Flatten basic config for single game or minimal permutations
         # For the standalone script, we will support exact 1 configuration execution mostly
         # but here we keep strict compatibility with the permutation logic
@@ -942,9 +972,9 @@ class FairGameFactory:
             row[f"Personality{i+1}"] = personalities[i] if i < len(personalities) else "None"
             row[f"OpponentPersonalityProb{i+1}"] = probs[i] if i < len(probs) else 0
             
-        return [self._create_single_game(config, row)]
+        return [self._create_single_game(config, row, output_file=output_file)]
 
-    def _create_single_game(self, config, row):
+    def _create_single_game(self, config, row, output_file: str = None):
         # Create Agents
         agents = {}
         i = 1
@@ -968,7 +998,9 @@ class FairGameFactory:
             punishment_enabled=config.get('punishment_enabled', False),
             meta_prompt_enabled=config.get('meta_prompt_enabled', False),
             meta_prompt_rounds=config.get('meta_prompt_rounds', [1, 3, 5]),
-            extract_reasoning=config.get('extract_reasoning', False)
+            extract_reasoning=config.get('extract_reasoning', False),
+            save_incremental=config.get('save_incremental', False),
+            output_file=output_file
         )
 
 # --- 4. EXPERIMENT SETUP (TEMPLATES & CONFIGS) ---
@@ -1216,6 +1248,7 @@ if __name__ == "__main__":
     parser.add_argument("--meta-prompt", action="store_true", help="Enable Meta-Prompting (comprehension validation)")
     parser.add_argument("--meta-rounds", type=str, default="1,3,5", help="Comma-separated rounds for meta-prompts (e.g., '1,3,5')")
     parser.add_argument("--reasoning", action="store_true", help="Extract reasoning from agents (separate prompt)")
+    parser.add_argument("--save-incremental", action="store_true", help="Save JSON after each round (safer for long experiments)")
     parser.set_defaults(punishment=True)
 
     args = parser.parse_args()
@@ -1241,6 +1274,7 @@ if __name__ == "__main__":
     config['meta_prompt_enabled'] = args.meta_prompt
     config['meta_prompt_rounds'] = [int(r.strip()) for r in args.meta_rounds.split(',')]
     config['extract_reasoning'] = args.reasoning
+    config['save_incremental'] = args.save_incremental
     
     # Multi-Model & Multi-Lang Loop
     models_list = args.models.split(',')
@@ -1274,8 +1308,15 @@ if __name__ == "__main__":
             # Adjust personalities map key to match single lang list
             # The factory expects config['agents']['personalities'][lang] to exist
             
+            # Generate incremental save filename if enabled
+            incremental_file = None
+            if args.save_incremental:
+                timestamp = int(time.time())
+                incremental_file = f"experiment_results_{args.game}_{model}_{lang}_Noise{args.noise}_{timestamp}.json"
+                print(f"[Incremental Save] Will save to: {incremental_file}")
+            
             try:
-                results = factory.create_and_run_games(run_config)
+                results = factory.create_and_run_games(run_config, output_file=incremental_file)
                 
                 # Tag results with metadata key
                 for k, v in results.items():
