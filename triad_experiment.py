@@ -157,14 +157,28 @@ class LocalHFConnector(AbstractConnector):
                 else:
                     raise e
 
-            model = AutoModelForCausalLM.from_pretrained(
-                self.provider_model,
-                quantization_config=bnb_config,
-                device_map="auto",
-                trust_remote_code=True,
-                # If path exists, force local only to sure we don't accidentally hit the Hub
-                local_files_only=os.path.exists(self.provider_model) 
-            )
+            try:
+                print(f"[INFO] Attempting to load with BitsAndBytes (4-bit)...")
+                model = AutoModelForCausalLM.from_pretrained(
+                    self.provider_model,
+                    quantization_config=bnb_config,
+                    device_map="auto",
+                    trust_remote_code=True,
+                    # If path exists, force local only to sure we don't accidentally hit the Hub
+                    local_files_only=os.path.exists(self.provider_model) 
+                )
+            except Exception as e:
+                if "quantized" in str(e) or "Config" in str(e):
+                    print(f"[INFO] Model appears already quantized or config mismatch ({e}). Reloading WITHOUT BitsAndBytes...")
+                    model = AutoModelForCausalLM.from_pretrained(
+                        self.provider_model,
+                        # quantization_config=bnb_config, # REMOVED for pre-quantized models
+                        device_map="auto",
+                        trust_remote_code=True,
+                        local_files_only=os.path.exists(self.provider_model) 
+                    )
+                else:
+                    raise e
             
             LocalHFConnector._pipeline = pipeline(
                 "text-generation",
