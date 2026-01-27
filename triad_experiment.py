@@ -190,13 +190,24 @@ class MockConnector(AbstractConnector):
 
 
 MODEL_PROVIDER_MAP = {
+    # API Providers
     "Claude35Haiku": (AnthropicConnector, "claude-3-5-haiku-20241022"),
     "MistralLarge": (MistralConnector, "mistral-large-latest"),
     "OpenAIGPT4o": (OpenAIConnector, "gpt-4o"),
     "MockModel": (MockConnector, "mock"),
+    
+    # Local HuggingFace Models (Kaggle/Colab)
     "Llama3-8B": (LocalHFConnector, "meta-llama/Meta-Llama-3-8B-Instruct"),
-    "Llama3-70B": (LocalHFConnector, "meta-llama/Meta-Llama-3-70B-Instruct"), # Requires H100 80GB
-    "Mistral-7B": (LocalHFConnector, "mistralai/Mistral-7B-Instruct-v0.2")
+    "Llama3-70B": (LocalHFConnector, "meta-llama/Meta-Llama-3-70B-Instruct"),
+    "Mistral-7B": (LocalHFConnector, "mistralai/Mistral-7B-Instruct-v0.3"),
+    "Qwen2.5-7B": (LocalHFConnector, "Qwen/Qwen2.5-7B-Instruct"),
+    "Qwen2.5-14B": (LocalHFConnector, "Qwen/Qwen2.5-14B-Instruct"),
+    "Qwen2.5-32B": (LocalHFConnector, "Qwen/Qwen2.5-32B-Instruct"),
+    "Qwen2.5-72B": (LocalHFConnector, "Qwen/Qwen2.5-72B-Instruct"),
+    "DeepSeek-R1-8B": (LocalHFConnector, "deepseek-ai/DeepSeek-R1-Distill-Llama-8B"),
+    "DeepSeek-R1-70B": (LocalHFConnector, "deepseek-ai/DeepSeek-R1-Distill-Llama-70B"),
+    "Gemma2-9B": (LocalHFConnector, "google/gemma-2-9b-it"),
+    "Gemma2-27B": (LocalHFConnector, "google/gemma-2-27b-it"),
 }
 
 class ChatModelFactory:
@@ -241,7 +252,9 @@ class GameHistory:
                 round_list.append({
                     "agent": agent_name,
                     "message": data.get("message"),
-                    "strategy": data.get("strategy"),
+                    "intended_strategy": data.get("intended_strategy"), # Log intention
+                    "is_noise": data.get("is_noise", False),            # Log noise event
+                    "strategy": data.get("strategy"),                   # Log actual result
                     "score": data.get("score"),
                 })
             summary[round_key] = round_list
@@ -449,6 +462,7 @@ class GameRound:
 
         # Apply Noise (Trembling Hand)
         final_strategy_key = intended_strategy_key
+        is_noise = False
         if self.game.noise > 0:
             if random.random() < self.game.noise:
                 # Flip strategy! (Assume 2 strategies for now)
@@ -457,8 +471,13 @@ class GameRound:
                 others = [k for k in all_keys if k != intended_strategy_key]
                 if others:
                     final_strategy_key = random.choice(others)
+                    is_noise = True
                     print(f"!!! TREMBLING HAND: {agent.name} intended {intended_strategy_key} but slipped to {final_strategy_key} !!!")
 
+        # Save transient state to agent for logging
+        agent.last_intended_strategy = self.game.payoff_matrix.strategies[intended_strategy_key]
+        agent.last_is_noise = is_noise
+        
         agent.add_strategy(self.game.payoff_matrix.strategies[final_strategy_key])
         return final_strategy_key
 
@@ -466,7 +485,9 @@ class GameRound:
         for agent in self.game.agents.values():
             self.game.history.update_round(self.round_number, agent.name, {
                 'strategy': agent.last_strategy(),
-                'score': agent.last_score()
+                'score': agent.last_score(),
+                'intended_strategy': getattr(agent, 'last_intended_strategy', None),
+                'is_noise': getattr(agent, 'last_is_noise', False)
             })
 
 class FairGame:
