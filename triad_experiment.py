@@ -130,20 +130,6 @@ class LocalHFConnector(AbstractConnector):
             import torch
             from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline, BitsAndBytesConfig
             
-            # Login to HF if token exists in Kaggle secrets
-            try:
-                from kaggle_secrets import UserSecretsClient
-                from huggingface_hub import login
-                secrets = UserSecretsClient()
-                hf_token = secrets.get_secret("HF_TOKEN")
-                if hf_token: 
-                    login(token=hf_token)
-                    print("Logged in to Hugging Face Hub successfully.")
-            except ImportError:
-                pass # Not on Kaggle or secrets module missing
-            except Exception as e:
-                print(f"Note: Could not retrieve HF_TOKEN: {e}")
-
             # Quantization Config for H100/A100 optimization
             bnb_config = BitsAndBytesConfig(
                 load_in_4bit=True,
