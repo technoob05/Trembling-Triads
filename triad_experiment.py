@@ -16,6 +16,16 @@ import subprocess
 import importlib.util
 from typing import Dict, Any, List, Tuple
 
+# Optimize CUDA Memory
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
+# Attempt to patch Unsloth early
+try:
+    import unsloth
+    print("[INFO] Unsloth found and patched early.")
+except ImportError:
+    pass
+
 # --- 1. AUTO-SETUP & ENVIRONMENT ---
 
 REQUIRED_PACKAGES = [
@@ -124,8 +134,16 @@ class LocalHFConnector(AbstractConnector):
         if LocalHFConnector._model_name != provider_model:
             self._load_model()
     
+    
     def _load_model(self):
         print(f"Loading Local Model: {self.provider_model} onto GPU...")
+        
+        # Aggressive Memory Cleanup
+        import gc
+        import torch
+        gc.collect()
+        torch.cuda.empty_cache()
+
         try:
             import torch
             from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline, BitsAndBytesConfig
@@ -133,21 +151,23 @@ class LocalHFConnector(AbstractConnector):
             # Debugging Path
             if os.path.exists(self.provider_model):
                 print(f"[DEBUG] Model path exists: {self.provider_model}")
-                print(f"[DEBUG] Directory contents: {os.listdir(self.provider_model)}")
+                # print(f"[DEBUG] Directory contents: {os.listdir(self.provider_model)}")
             else:
                 print(f"[WARNING] Model path NOT FOUND on disk: {self.provider_model}. Attempting to download from HF Hub...")
 
             # 1. Try Loading with Unsloth (Preferred for GPT-OSS / Llama / Qwen)
             try:
+                # Must import unsloth BEFORE transformers (if not already handled globally)
                 from unsloth import FastLanguageModel
                 print(f"[INFO] Unsloth detected. Attempting to load {self.provider_model} via FastLanguageModel...")
                 
                 model, tokenizer = FastLanguageModel.from_pretrained(
                     model_name = self.provider_model,
-                    max_seq_length = 2048, # Reasonable default
+                    max_seq_length = 1024, # Optimized for memory (was 2048)
                     dtype = None, # Auto
                     load_in_4bit = True,
                     trust_remote_code = True,
+                    device_map = "auto",
                 )
                 
                 # Unsloth optimization for inference
@@ -168,6 +188,9 @@ class LocalHFConnector(AbstractConnector):
 
             except Exception as e:
                 print(f"[INFO] Unsloth load failed or not installed ({e}). Falling back to Transformers...")
+                # Cleanup again if Unsloth partially loaded stuff
+                gc.collect()
+                torch.cuda.empty_cache()
 
             # 2. Fallback: Standard Transformers Loading
             # Handle 4-bit loading
