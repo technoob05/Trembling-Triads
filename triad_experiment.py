@@ -177,11 +177,11 @@ class LocalHFConnector(AbstractConnector):
                     "text-generation",
                     model=model,
                     tokenizer=tokenizer,
-                    max_new_tokens=10,  # Reduced from 50 to force shorter responses
+                    max_new_tokens=50,  # Enough for reasoning (1-2 sentences)
                     do_sample=False,     # Deterministic for game responses
                     temperature=0.1,     # Lower temperature for more focused responses
-                    top_p=0.9,
-                    # Remove max_length to avoid conflict warning
+                    top_p=0.9
+                    # max_length removed to avoid conflict warning
                 )
                 LocalHFConnector._model_name = self.provider_model
                 print("Model loaded successfully via Unsloth.")
@@ -233,7 +233,7 @@ class LocalHFConnector(AbstractConnector):
                 "text-generation",
                 model=model,
                 tokenizer=tokenizer,
-                max_new_tokens=10, # Reduced from 50 to force shorter responses
+                max_new_tokens=50,  # Enough for reasoning (1-2 sentences)
                 do_sample=False,    # Deterministic for game responses
                 temperature=0.1,    # Lower temperature for more focused responses
                 top_p=0.9
