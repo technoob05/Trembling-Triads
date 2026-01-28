@@ -1,0 +1,11 @@
+openai>=1.0.0
+anthropic>=0.18.0
+mistralai>=0.1.0
+pandas>=2.0.0
+python-dotenv>=1.0.0
+torch
+transformers
+accelerate
+bitsandbytes
+unsloth
+unsloth_zoo
