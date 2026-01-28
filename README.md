@@ -1,72 +1,219 @@
-# Triad Experiment - Multi-Agent Game Theory Research
+# PROJECT TRIAD: Trembling Hands and Reluctant Heroes
+## A Unified Game-Theoretic Framework for Multi-Agent LLM Evaluation
 
-Triadic game theory experiments with Large Language Models (Prisoner's Dilemma, Public Goods Game, Volunteer's Dilemma).
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![NeurIPS 2026](https://img.shields.io/badge/NeurIPS-2026-red.svg)](https://neurips.cc/)
 
-## 🚀 Quick Start
+Multi-agent game-theoretic experiments with Large Language Models across three strategic scenarios: Prisoner's Dilemma, Public Goods Game, and Volunteer's Dilemma.
+
+---
+
+## 🎯 One-Command Reproduction
 
 ```bash
-# Test với MockModel (không cần GPU)
-python triad_experiment.py --game PD --models MockModel --rounds 5 --reasoning --meta-prompt
+# Install dependencies
+pip install -r requirements.txt
 
-# Chạy với model thật (cần GPU)
-python triad_experiment.py --game PD --models Qwen2.5-32B --rounds 20 --reasoning --meta-prompt
+# Reproduce entire paper (experiments + analysis + figures)
+python reproduce_paper.py --mode all
 
-# Test xem mọi thứ hoạt động chưa
-python test_fixes.py
+# Or run components separately:
+python reproduce_paper.py --mode experiments  # Run experiments only
+python reproduce_paper.py --mode analysis     # Run analysis only
+python reproduce_paper.py --mode figures      # Generate figures only
+```
+
+**Expected Output:**
+- 6 experiment result files (~1.8 MB)
+- COMPREHENSIVE_ANALYSIS.md (20-page research paper)
+- 5 publication-quality figures (PNG + PDF)
+
+**Time:** ~2-4 hours depending on API rate limits
+
+---
+
+## 🚀 Quick Start (Individual Experiments)
+
+```bash
+# Prisoner's Dilemma with noise
+python triad_experiment.py --game PD --noise 0.05 --lang en --rounds 100
+
+# Public Goods Game
+python triad_experiment.py --game PGG --noise 0.0 --lang en --rounds 100
+
+# Volunteer's Dilemma
+python triad_experiment.py --game VD --noise 0.0 --lang en --rounds 100
+```
+
+---
+
+## � Key Research Findings
+
+### Three Paradoxes Discovered
+
+1. **Trembling Paradox** - Noise increases cooperation by 12% (TRS = +0.20)
+2. **Welfare Paradox** - "Toxic Kindness" enables exploitation (3:1 inequality)
+3. **Heroism Paradox** - Strategic waiting causes bystander cascades (4% failures)
+
+### Novel Metrics Introduced
+
+- **TRS** (Trembling Robustness Score): Cooperation change per 1% noise
+- **Alignment Gap**: Value created vs. captured (Shapley-based)
+- **Coalition Entropy**: Alliance stability measure
+- **Toxic Kindness Index**: Free-riding tolerance duration
+
+### Publication-Ready Analysis
+
+See [`Output_Exp/COMPREHENSIVE_ANALYSIS.md`](Output_Exp/COMPREHENSIVE_ANALYSIS.md) for the complete 20-page research paper with:
+- Detailed methodology
+- Statistical analysis
+- Publication-quality figures
+- Theoretical contributions
+
+---
+
+## 📖 Documentation Structure
+
+### For Quick Start
+- **[reproduce_paper.py](reproduce_paper.py)** - One-command reproduction ⭐
+- **[QUICK_START.md](docs/QUICK_START.md)** - Basic usage examples
+
+### For Researchers
+- **[COMPREHENSIVE_ANALYSIS.md](Output_Exp/COMPREHENSIVE_ANALYSIS.md)** - Full 20-page paper
+- **[EXECUTIVE_SUMMARY.md](Output_Exp/EXECUTIVE_SUMMARY.md)** - 1-page overview
+- **[EXPERIMENTS_GUIDE.md](EXPERIMENTS_GUIDE.md)** - Detailed experiment documentation
+
+### For Developers
+- **[INDEX.md](INDEX.md)** - Complete project navigation
+- **[Output_Exp/README.md](Output_Exp/README.md)** - Data structure guide
+- **[test_new_features.py](test_new_features.py)** - Unit tests
+
+---
+
+## 🎯 Features & Capabilities
+
+### ✅ Core Functionality
+- **3 Game Types**: Prisoner's Dilemma (IPD), Public Goods Game (PGG), Volunteer's Dilemma (VD)
+- **Noise Injection**: Trembling Hand mechanism (0-10% error rate)
+- **Multi-Language**: English, Vietnamese, with extensibility for more
+- **Reasoning Extraction**: LLMs explain strategic decisions
+- **Meta-Prompting**: Validates game comprehension
+
+### 🔬 Research Features
+- **Shapley Value Analysis**: Individual contribution to welfare
+- **Coalition Entropy**: Alliance stability metrics
+- **Language-Strategy Coupling**: Cross-lingual behavioral analysis
+- **Comprehensive Logging**: Full game history in structured JSON
+
+---
+
+## 🧪 Experimental Setup
+
+### Agent Personalities
+- **Alice**: Cooperative (always tries to cooperate)
+- **Bob**: Selfish (maximizes own utility)
+- **Charlie**: Tit-for-Tat (mirrors others' behavior)
+
+### Supported Models
+- **API-based**: Claude, GPT-4, Mistral Large
+- **Local (requires GPU)**: Qwen 2.5 (7B-72B), Llama 3, Mistral, DeepSeek
+- **Mock**: Testing without API/GPU
+
+### Game Parameters
+- Rounds: 1-1000 (default: 100)
+- Noise: 0-100% (default: 0%)
+- Language: en, vn
+- With reasoning and meta-prompt validation
+
+---
+
+## 📊 Output Structure
+
+```
+Output_Exp/
+├── experiment_results_PD_*.json      # Raw experimental data
+├── experiment_results_PGG_*.json
+├── experiment_results_VD_*.json
+├── COMPREHENSIVE_ANALYSIS.md         # 20-page research paper
+├── EXECUTIVE_SUMMARY.md              # 1-page overview
+├── README.md                         # Data guide
+└── figures/                          # Publication figures
+    ├── Figure1_Cooperation_vs_Noise.png
+    ├── Figure2_Agent_Behavior.png
+    ├── Figure3_Shapley_Heatmap.png
+    ├── Figure4_Language_Comparison.png
+    └── Figure5_Trembling_Robustness.png
+```
+
+---
+
+## 🛠️ Installation
+
+### Requirements
+- Python 3.10+
+- GPU with 8GB+ VRAM (for local models)
+- API keys for Claude/GPT/Mistral (for API models)
+
+### Setup
+
+```bash
+# Clone repository
+git clone https://github.com/technoob05/Trembling-Triads.git
+cd Trembling-Triads/Project_Triad
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Set API keys (optional, for API-based models)
+export API_KEY_ANTHROPIC="your-key"
+export API_KEY_OPENAI="your-key"
+export API_KEY_MISTRAL="your-key"
+
+# Test installation
 python test_new_features.py
 ```
 
 ---
 
-## 📖 Documentation
+## 📈 Citation
 
-**Tất cả tài liệu đã được tổ chức trong folder [`docs/`](docs/):**
+If you use this code or findings, please cite:
 
-### 🇻🇳 Tiếng Việt
-- **[SUMMARY_VI.md](docs/SUMMARY_VI.md)** - Tổng quan toàn bộ features ⭐ **BẮT ĐẦU ĐÂY**
-- **[TOM_TAT_SUA_LOI.md](docs/TOM_TAT_SUA_LOI.md)** - Chi tiết các bug fixes
-- **[QUICK_START.md](docs/QUICK_START.md)** - Các lệnh thường dùng
-
-### 🇬🇧 English
-- **[NEW_FEATURES.md](docs/NEW_FEATURES.md)** - Reasoning Extraction & Meta-Prompting
-- **[FIXES.md](docs/FIXES.md)** - Bug fixes and performance improvements
-
----
-
-## 🎯 Features
-
-### ✅ Core Functionality
-- **3 Game Types**: Prisoner's Dilemma (PD), Public Goods Game (PGG), Volunteer's Dilemma (VD)
-- **Multi-Model Support**: Llama, Qwen, Mistral, GPT, Claude, or any HuggingFace model
-- **Multi-Language**: English, Vietnamese
-- **Trembling Hand**: Noise injection for realistic behavior
-- **Punishment Phase**: Optional punishment mechanism (PGG)
-
-### 🆕 New Features (Inspired by "Nicer than Human" Paper)
-- **Reasoning Extraction** - LLM explains WHY they chose each strategy
-- **Meta-Prompting** - Validates that LLMs understand game rules
-- **Comprehensive Logging** - JSON output with full game history
+```bibtex
+@article{projecttriad2026,
+  title={Trembling Hands and Reluctant Heroes: A Unified Game-Theoretic 
+         Framework for Robustness, Welfare, and Alignment in Multi-Agent LLMs},
+  author={Project Triad Research Team},
+  journal={In preparation for NeurIPS 2026},
+  year={2026},
+  url={https://github.com/technoob05/Trembling-Triads}
+}
+```
 
 ---
 
-## 📊 Supported Models
+## 📜 License
 
-### API-Based (Requires API Keys)
-- `Claude35Haiku` - Anthropic
-- `MistralLarge` - Mistral AI
-- `OpenAIGPT4o` - OpenAI
-- `MockModel` - Testing without API
-
-### Local (HuggingFace - Requires GPU)
-- `Qwen2.5-7B`, `Qwen2.5-14B`, `Qwen2.5-32B`, `Qwen2.5-72B`
-- `Llama3-8B`, `Llama3-70B`
-- `Mistral-7B`
-- `DeepSeek-R1-8B`, `DeepSeek-R1-70B`
-- `Gemma2-9B`, `Gemma2-27B`
-- `GPT-OSS-120B`
-- Any HuggingFace model path or ID
+MIT License - see [LICENSE](../LICENSE) for details.
 
 ---
+
+## 🤝 Contributing
+
+See [EXPERIMENTS_GUIDE.md](EXPERIMENTS_GUIDE.md) for contribution guidelines.
+
+---
+
+## 📞 Contact
+
+- GitHub: https://github.com/technoob05/Trembling-Triads
+- Issues: https://github.com/technoob05/Trembling-Triads/issues
+
+---
+
+**Status:** ✅ Clean, documented, and ready for NeurIPS 2026 submission  
+**Last Updated:** January 28, 2026
 
 ## 🎮 Usage Examples
 

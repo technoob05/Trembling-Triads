@@ -238,7 +238,7 @@ def detect_strategy_type(agent_actions):
     return "Mixed Strategy"
 
 def analyze_strategic_patterns(df):
-    """Identify strategy types for each agent"""
+    """Identify strategy types for each agent and experiment (with language tags)"""
     print("\n[PART 3] STRATEGIC PATTERN RECOGNITION")
     print("-"*80)
     
@@ -250,9 +250,12 @@ def analyze_strategic_patterns(df):
         for agent_name in exp_df['agent'].unique():
             agent_df = exp_df[exp_df['agent'] == agent_name].sort_values('round')
             strategy_type = detect_strategy_type(agent_df)
-            
+
+            lang = agent_df['language'].iloc[0] if 'language' in agent_df.columns else 'unknown'
+
             patterns.append({
                 'Experiment': exp_name[:40],
+                'Language': lang,
                 'Agent': agent_name,
                 'Strategy Type': strategy_type,
                 'Cooperation Rate': (agent_df['strategy'] == 'Cooperate').mean()
@@ -399,8 +402,8 @@ def analyze_meta_prompts(df):
 # PART 6: VISUALIZATIONS (Publication-Ready)
 # =============================================================================
 
-def create_comprehensive_visualizations(df, behavior_df, reasoning_data):
-    """Generate all figures for paper"""
+def create_comprehensive_visualizations(df, behavior_df, reasoning_data, pattern_df=None):
+    """Generate all figures for paper (including language-specific plots)"""
     print("\n[PART 6] GENERATING PUBLICATION-READY VISUALIZATIONS")
     print("-"*80)
     
@@ -540,7 +543,49 @@ def create_comprehensive_visualizations(df, behavior_df, reasoning_data):
     plt.savefig(os.path.join(OUTPUT_DIR, 'fig5_agent_comparison.png'), dpi=300, bbox_inches='tight')
     print(f"Saved: fig5_agent_comparison.png")
     plt.close()
-    
+
+    # Figure 6: Language comparison (cooperation)
+    if 'language' in df.columns:
+        fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+
+        # Overall cooperation by language
+        lang_coop = df.groupby('language')['strategy'].apply(lambda x: (x == 'Cooperate').mean() * 100)
+        axes[0].bar(lang_coop.index, lang_coop.values, color=['#3498db', '#9b59b6'], alpha=0.8)
+        axes[0].set_ylabel('Cooperation Rate (%)')
+        axes[0].set_title('Cooperation by Language', fontweight='bold')
+        axes[0].set_ylim([0, 105])
+        for i, v in enumerate(lang_coop.values):
+            axes[0].text(i, v + 2, f'{v:.1f}%', ha='center', fontweight='bold')
+
+        # Cooperation by language × agent
+        lang_agent = df.groupby(['language', 'agent'])['strategy'].apply(
+            lambda x: (x == 'Cooperate').mean() * 100
+        ).unstack('agent')
+        lang_agent.plot(kind='bar', ax=axes[1], alpha=0.8)
+        axes[1].set_ylabel('Cooperation Rate (%)')
+        axes[1].set_title('Cooperation by Language × Agent', fontweight='bold')
+        axes[1].set_ylim([0, 105])
+        axes[1].legend(title='Agent')
+
+        plt.tight_layout()
+        plt.savefig(os.path.join(OUTPUT_DIR, 'fig6_language_comparison.png'), dpi=300, bbox_inches='tight')
+        print("Saved: fig6_language_comparison.png")
+        plt.close()
+
+    # Figure 7: Strategy-type distribution by language (from pattern_df)
+    if pattern_df is not None and 'Language' in pattern_df.columns:
+        fig, ax = plt.subplots(figsize=(10, 6))
+        lang_strat = pattern_df.groupby(['Language', 'Strategy Type']).size().unstack(fill_value=0)
+        lang_strat.plot(kind='bar', stacked=True, ax=ax, colormap='tab20')
+        ax.set_ylabel('Count of Agent-Experiments')
+        ax.set_title('Strategy-Type Distribution by Language', fontweight='bold')
+        ax.legend(title='Strategy Type', bbox_to_anchor=(1.02, 1), loc='upper left')
+
+        plt.tight_layout()
+        plt.savefig(os.path.join(OUTPUT_DIR, 'fig7_language_strategy_types.png'), dpi=300, bbox_inches='tight')
+        print("Saved: fig7_language_strategy_types.png")
+        plt.close()
+
     print("\nAll visualizations generated!")
 
 # =============================================================================
@@ -646,7 +691,7 @@ def main():
     meta_df = analyze_meta_prompts(df)
     
     # Part 6: Visualizations
-    create_comprehensive_visualizations(df, behavior_df, reasoning_data)
+    create_comprehensive_visualizations(df, behavior_df, reasoning_data, pattern_df)
     
     # Part 7: Statistical tables
     generate_statistical_summary(df, behavior_df)
